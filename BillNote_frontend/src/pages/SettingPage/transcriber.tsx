@@ -33,6 +33,7 @@ export default function Transcriber() {
   const [saving, setSaving] = useState(false)
   const [selectedType, setSelectedType] = useState('')
   const [selectedModelSize, setSelectedModelSize] = useState('')
+  const [groqModel, setGroqModel] = useState('whisper-large-v3-turbo')
   const [modelStatuses, setModelStatuses] = useState<ModelStatus[]>([])
   const [mlxModelStatuses, setMlxModelStatuses] = useState<ModelStatus[]>([])
   const [mlxAvailable, setMlxAvailable] = useState(false)
@@ -88,6 +89,7 @@ export default function Transcriber() {
         setConfig(data)
         setSelectedType(data.transcriber_type)
         setSelectedModelSize(data.whisper_model_size)
+        setGroqModel(data.groq_transcriber_model || 'whisper-large-v3-turbo')
       } catch {
         toast.error('获取转写器配置失败')
       } finally {
@@ -133,11 +135,18 @@ export default function Transcriber() {
 
     setSaving(true)
     try {
-      const payload: { transcriber_type: string; whisper_model_size?: string } = {
+      const payload: {
+        transcriber_type: string
+        whisper_model_size?: string
+        groq_transcriber_model?: string
+      } = {
         transcriber_type: selectedType,
       }
       if (isWhisperType(selectedType)) {
         payload.whisper_model_size = selectedModelSize
+      }
+      if (selectedType === 'groq') {
+        payload.groq_transcriber_model = groqModel.trim() || 'whisper-large-v3-turbo'
       }
       await updateTranscriberConfig(payload)
       toast.success('转写器配置已保存')
@@ -267,6 +276,27 @@ export default function Transcriber() {
               </Select>
               <p className="text-xs text-neutral-400">
                 模型越大精度越高，但速度更慢、占用更多显存
+              </p>
+            </div>
+          )}
+
+          {selectedType === 'groq' && (
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Groq 转写模型</label>
+              <Select value={groqModel} onValueChange={setGroqModel}>
+                <SelectTrigger className="w-full max-w-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="whisper-large-v3-turbo">
+                    whisper-large-v3-turbo（推荐）
+                  </SelectItem>
+                  <SelectItem value="whisper-large-v3">whisper-large-v3</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-neutral-400">
+                与「AI 模型设置」里的 chat 模型无关；需同时在供应商中配置并启用 Groq 的 API Key。
+                也可通过环境变量 <code className="rounded bg-neutral-100 px-1">GROQ_TRANSCRIBER_MODEL</code> 覆盖。
               </p>
             </div>
           )}

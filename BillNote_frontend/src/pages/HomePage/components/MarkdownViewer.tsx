@@ -40,12 +40,52 @@ interface MarkdownViewerProps {
 }
 
 const steps = [
+  { label: '排队', key: 'PENDING' },
   { label: '解析链接', key: 'PARSING' },
   { label: '下载音频', key: 'DOWNLOADING' },
   { label: '转写文字', key: 'TRANSCRIBING' },
   { label: '总结内容', key: 'SUMMARIZING' },
-  { label: '保存完成', key: 'SUCCESS' },
+  { label: '保存', key: 'SAVING' },
+  { label: '完成', key: 'SUCCESS' },
 ]
+
+const STEP_HINTS: Record<string, string> = {
+  PENDING: '任务已提交，等待执行…',
+  PARSING: '正在解析链接并尝试获取平台字幕…',
+  DOWNLOADING: '正在下载音视频，大文件或弱网会较慢…',
+  TRANSCRIBING: '正在把音频转成文字。在线引擎（如 Groq）需上传音频，本地 Whisper 需推理，都可能耗时较长。',
+  SUMMARIZING: 'AI 正在根据转写内容生成结构化笔记，长视频会更久…',
+  FORMATTING: '正在插入截图/链接等后处理…',
+  SAVING: '正在保存笔记与任务记录…',
+  SUCCESS: '已完成',
+  FAILED: '生成失败',
+  FAILD: '生成失败',
+}
+
+const STEP_LABEL: Record<string, string> = Object.fromEntries(
+  steps.map(s => [s.key, s.label]).concat([
+    ['FORMATTING', '后处理'],
+    ['FAILED', '失败'],
+    ['RUNNING', '进行中'],
+  ])
+)
+
+function formatElapsed(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`
+  const m = Math.floor(seconds / 60)
+  const s = seconds % 60
+  return `${m}m ${s.toString().padStart(2, '0')}s`
+}
+
+function cacheResumeHint(cache?: { audio?: boolean; transcript?: boolean; markdown?: boolean }) {
+  if (!cache) return '将尽量复用服务端已有缓存（若有）'
+  const parts: string[] = []
+  if (cache.audio) parts.push('下载')
+  if (cache.transcript) parts.push('转写')
+  if (cache.markdown) parts.push('笔记草稿')
+  if (!parts.length) return '未发现可复用缓存，将从头执行'
+  return `已有缓存可复用：${parts.join('、')}；重试时会跳过这些步骤`
+}
 
 const remarkPlugins = [gfm, remarkMath]
 const rehypePlugins = [rehypeKatex, rehypeSlug]
@@ -331,6 +371,23 @@ const MarkdownViewer: FC<MarkdownViewerProps> = memo(({ status }) => {
   const [showChat, setShowChat] = useState<false | 'half' | 'full'>(false)
   const [viewMode, setViewMode] = useState<'map' | 'preview'>('preview')
   const svgRef = useRef<SVGSVGElement>(null)
+  const [elapsedSec, setElapsedSec] = useState(0)
+  const stepStartedAt = useRef<number>(Date.now())
+  const lastStepRef = useRef<string>(taskStatus)
+
+  // 步骤切换时重置计时；同一步每秒刷新
+  useEffect(() => {
+    if (status !== 'loading') return
+    if (lastStepRef.current !== taskStatus) {
+      lastStepRef.current = taskStatus
+      stepStartedAt.current = Date.now()
+      setElapsedSec(0)
+    }
+    const t = setInterval(() => {
+      setElapsedSec(Math.floor((Date.now() - stepStartedAt.current) / 1000))
+    }, 1000)
+    return () => clearInterval(t)
+  }, [status, taskStatus, currentTask?.id])
 
   // 缓存 ReactMarkdown components，仅在 baseURL 变化时重建
   const markdownComponents = useMemo(() => createMarkdownComponents(baseURL), [baseURL])
@@ -416,13 +473,29 @@ const MarkdownViewer: FC<MarkdownViewerProps> = memo(({ status }) => {
   }
 
   if (status === 'loading') {
+    const stepKey = taskStatus === 'RUNNING' ? 'PARSING' : taskStatus
+    const detail =
+      currentTask?.statusMessage ||
+      STEP_HINTS[stepKey] ||
+      '正在处理，请稍候…'
+    const label = STEP_LABEL[stepKey] || stepKey
     return (
-      <div className="flex h-screen w-full flex-col items-center justify-center space-y-4 text-neutral-500">
-        <StepBar steps={steps} currentStep={taskStatus} />
+      <div className="flex h-screen w-full flex-col items-center justify-center space-y-4 px-6 text-neutral-500">
+        <div className="w-full max-w-2xl">
+          <StepBar steps={steps} currentStep={stepKey} />
+        </div>
         <Loading className="h-5 w-5" />
-        <div className="text-center text-sm">
-          <p className="text-lg font-bold">正在生成笔记，请稍候…</p>
-          <p className="mt-2 text-xs text-neutral-500">这可能需要几秒钟时间，取决于视频长度</p>
+        <div className="max-w-lg text-center text-sm">
+          <p className="text-lg font-bold text-neutral-800">
+            {label}
+            <span className="text-primary ml-2 text-base font-medium">
+              · {formatElapsed(elapsedSec)}
+            </span>
+          </p>
+          <p className="mt-2 text-sm text-neutral-600">{detail}</p>
+          <p className="mt-3 text-xs text-neutral-400">
+            长视频的下载 / 转写 / 总结都可能超过一分钟，计时在走说明任务仍在进行。
+          </p>
         </div>
       </div>
     )
@@ -441,16 +514,61 @@ const MarkdownViewer: FC<MarkdownViewerProps> = memo(({ status }) => {
   }
 
   if (status === 'failed' && !isMultiVersion) {
-    return (
-      <div className="flex h-screen w-full flex-col items-center justify-center gap-4 space-y-3">
-        <Error />
-        <div className="text-center">
-          <p className="text-lg font-bold text-red-500">笔记生成失败</p>
-          <p className="mt-2 mb-2 text-xs text-red-400">请检查后台或稍后再试</p>
+    const failedAt =
+      currentTask?.failedAtStatus ||
+      currentTask?.statusMessage ||
+      'UNKNOWN'
+    // 步骤条用失败步定位；若未知则落到 TRANSCRIBING 附近不强制
+    const failedStepKey = steps.some(s => s.key === failedAt)
+      ? failedAt
+      : failedAt === 'FORMATTING'
+        ? 'SUMMARIZING'
+        : 'TRANSCRIBING'
+    const reason =
+      currentTask?.errorMessage ||
+      currentTask?.statusMessage ||
+      '请检查后台日志或稍后再试'
+    const resume = cacheResumeHint(currentTask?.cache)
+    const failedLabel = STEP_LABEL[failedStepKey] || failedStepKey
 
-          <Button onClick={() => retryTask(currentTask.id)} size="lg">
-            重试
-          </Button>
+    return (
+      <div className="flex h-screen w-full flex-col items-center justify-center gap-4 px-6">
+        <div className="w-full max-w-2xl">
+          <StepBar
+            steps={steps}
+            currentStep={failedStepKey}
+            failedStep={failedStepKey}
+          />
+        </div>
+        <Error />
+        <div className="max-w-lg text-center">
+          <p className="text-lg font-bold text-red-500">笔记生成失败</p>
+          <p className="mt-1 text-sm text-neutral-600">
+            失败步骤：<span className="font-medium text-red-500">{failedLabel}</span>
+          </p>
+          <div className="mt-3 rounded-md border border-red-100 bg-red-50 px-4 py-3 text-left text-sm text-red-700 break-words">
+            {reason}
+          </div>
+          <p className="mt-3 text-xs text-neutral-500">{resume}</p>
+          <div className="mt-4 flex items-center justify-center gap-3">
+            <Button onClick={() => currentTask && retryTask(currentTask.id)} size="lg">
+              重试
+            </Button>
+            <Button
+              variant="outline"
+              size="lg"
+              onClick={async () => {
+                try {
+                  await navigator.clipboard.writeText(reason)
+                  toast.success('已复制错误信息')
+                } catch {
+                  toast.error('复制失败')
+                }
+              }}
+            >
+              复制错误
+            </Button>
+          </div>
         </div>
       </div>
     )

@@ -1,5 +1,4 @@
 import json
-import logging
 import os
 from dataclasses import asdict
 from pathlib import Path
@@ -31,6 +30,7 @@ from app.services.constant import SUPPORT_PLATFORM_MAP
 from app.services.provider import ProviderService
 from app.transcriber.base import Transcriber
 from app.transcriber.transcriber_provider import get_transcriber, _transcribers
+from app.utils.logger import get_logger
 from app.utils.note_helper import replace_content_markers, prepend_source_link
 from app.utils.screenshot_marker import extract_screenshot_timestamps
 from app.utils.status_code import StatusCode
@@ -47,16 +47,49 @@ API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost")
 BACKEND_PORT = os.getenv("BACKEND_PORT", "8483")
 BACKEND_BASE_URL = f"{API_BASE_URL}:{BACKEND_PORT}"
 
-# 输出目录（用于缓存音频、转写、Markdown 文件，以及存储截图）
+# 兼容旧 import：模块级常量仅作 fallback；运行时请用 get_note_output_dir()
 NOTE_OUTPUT_DIR = Path(os.getenv("NOTE_OUTPUT_DIR", "note_results"))
-NOTE_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+try:
+    NOTE_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+except Exception:
+    pass
 IMAGE_OUTPUT_DIR = os.getenv("OUT_DIR", "./static/screenshots")
-# 图片基础 URL（用于生成 Markdown 中的图片链接，需前端静态目录对应）
 IMAGE_BASE_URL = os.getenv("IMAGE_BASE_URL", "/static/screenshots")
 
-# 日志配置
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
+# 必须用 get_logger：裸 logging.getLogger 没有 file handler，
+# 笔记失败时 logger.error(...) 不会进 logs/app.log，用户只能看到 status.json。
+logger = get_logger(__name__)
+
+
+def get_note_output_dir() -> Path:
+    """笔记/缓存目录：设置页 paths.json > 环境变量 > 默认 note_results。"""
+    try:
+        from app.services.path_config_manager import get_path_config_manager
+        return Path(get_path_config_manager().get_note_output_dir())
+    except Exception:
+        p = Path(os.getenv("NOTE_OUTPUT_DIR", "note_results"))
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+
+
+def get_download_output_dir() -> str:
+    """音视频下载目录。"""
+    try:
+        from app.services.path_config_manager import get_path_config_manager
+        return get_path_config_manager().get_data_dir()
+    except Exception:
+        return os.getenv("DATA_DIR", "data")
+
+
+def _cache_flags(task_id: Optional[str]) -> dict:
+    if not task_id:
+        return {"audio": False, "transcript": False, "markdown": False}
+    out = get_note_output_dir()
+    return {
+        "audio": (out / f"{task_id}_audio.json").exists(),
+        "transcript": (out / f"{task_id}_transcript.json").exists(),
+        "markdown": (out / f"{task_id}_markdown.md").exists(),
+    }
 
 
 class NoteGenerator:
@@ -120,23 +153,54 @@ class NoteGenerator:
         if grid_size is None:
             grid_size = []
 
-        try:
-            logger.info(f"开始生成笔记 (task_id={task_id})")
-            self._update_status(task_id, TaskStatus.PARSING)
+        # 当前进行中的粗状态，失败时写入 failed_at
+        current_phase: Optional[TaskStatus] = TaskStatus.PARSING
 
-            # 获取下载器与 GPT 实例
+        try:
+            out_dir = get_note_output_dir()
+            if not output_path:
+                output_path = get_download_output_dir()
+
+            cache = _cache_flags(task_id)
+            resume_hint_parts = []
+            if cache["audio"]:
+                resume_hint_parts.append("音频元信息")
+            if cache["transcript"]:
+                resume_hint_parts.append("转写")
+            if cache["markdown"]:
+                resume_hint_parts.append("笔记草稿")
+            resume_msg = (
+                f"复用已有缓存（{'、'.join(resume_hint_parts)}），从实际缺失步骤继续…"
+                if resume_hint_parts
+                else "解析链接与任务参数…"
+            )
+
+            logger.info(f"开始生成笔记 (task_id={task_id}, cache={cache})")
+            # 有转写缓存时直接对齐到总结前的展示，避免重试时步骤条从头假跑
+            if cache["transcript"] and cache["audio"]:
+                current_phase = TaskStatus.SUMMARIZING
+                self._update_status(
+                    task_id, TaskStatus.SUMMARIZING,
+                    message=resume_msg or "已有转写缓存，准备生成笔记…",
+                )
+            elif cache["audio"] and not cache["transcript"]:
+                current_phase = TaskStatus.TRANSCRIBING
+                self._update_status(
+                    task_id, TaskStatus.TRANSCRIBING,
+                    message=resume_msg or "已有下载缓存，准备转写…",
+                )
+            else:
+                current_phase = TaskStatus.PARSING
+                self._update_status(task_id, TaskStatus.PARSING, message=resume_msg)
 
             downloader = self._get_downloader(platform)
             gpt = self._get_gpt(model_name, provider_id)
 
-            # 缓存文件路径
-            audio_cache_file = NOTE_OUTPUT_DIR / f"{task_id}_audio.json"
-            transcript_cache_file = NOTE_OUTPUT_DIR / f"{task_id}_transcript.json"
-            markdown_cache_file = NOTE_OUTPUT_DIR / f"{task_id}_markdown.md"
-            # 1. 获取字幕/转写：优先缓存 → 平台字幕 → 音频转写
+            audio_cache_file = out_dir / f"{task_id}_audio.json"
+            transcript_cache_file = out_dir / f"{task_id}_transcript.json"
+            markdown_cache_file = out_dir / f"{task_id}_markdown.md"
             transcript = None
 
-            # 尝试读取缓存
             if transcript_cache_file.exists():
                 logger.info(f"检测到转写缓存 ({transcript_cache_file})，尝试读取")
                 try:
@@ -151,8 +215,12 @@ class NoteGenerator:
                 except Exception as e:
                     logger.warning(f"加载转写缓存失败: {e}")
 
-            # 缓存没有，尝试获取平台字幕
             if transcript is None:
+                current_phase = TaskStatus.PARSING
+                self._update_status(
+                    task_id, TaskStatus.PARSING,
+                    message="尝试获取平台字幕（优先于音频下载）…",
+                )
                 logger.info("尝试获取平台字幕（优先于音频下载）...")
                 try:
                     transcript = downloader.download_subtitles(video_url)
@@ -169,10 +237,9 @@ class NoteGenerator:
                     logger.warning(f"获取平台字幕失败: {e}，将下载音频后转写")
                     transcript = None
 
-            # 2. 下载音频/视频
-            # 有字幕时只提取元信息，不下载音视频文件（除非需要截图/视频理解）
             has_transcript = transcript is not None
             need_full_download = not has_transcript or screenshot or video_understanding
+            current_phase = TaskStatus.DOWNLOADING
             audio_meta = self._download_media(
                 downloader=downloader,
                 video_url=video_url,
@@ -188,8 +255,8 @@ class NoteGenerator:
                 skip_download=not need_full_download,
             )
 
-            # 3. 如果前面没拿到字幕，走转写流程
             if transcript is None:
+                current_phase = TaskStatus.TRANSCRIBING
                 transcript = self._get_transcript(
                     downloader=downloader,
                     video_url=video_url,
@@ -199,7 +266,7 @@ class NoteGenerator:
                     task_id=task_id,
                 )
 
-            # 3. GPT 总结
+            current_phase = TaskStatus.SUMMARIZING
             markdown = self._summarize_text(
                 audio_meta=audio_meta,
                 transcript=transcript,
@@ -213,8 +280,12 @@ class NoteGenerator:
                 video_img_urls=self.video_img_urls,
             )
 
-            # 4. 截图 & 链接替换
             if _format:
+                current_phase = TaskStatus.FORMATTING
+                self._update_status(
+                    task_id, TaskStatus.FORMATTING,
+                    message="插入截图/链接等后处理…",
+                )
                 markdown = self._post_process_markdown(
                     markdown=markdown,
                     video_path=self.video_path,
@@ -225,18 +296,27 @@ class NoteGenerator:
 
             markdown = prepend_source_link(markdown, str(video_url))
 
-            # 5. 保存记录到数据库
-            self._update_status(task_id, TaskStatus.SAVING)
+            current_phase = TaskStatus.SAVING
+            self._update_status(task_id, TaskStatus.SAVING, message="保存笔记与任务记录…")
             self._save_metadata(video_id=audio_meta.video_id, platform=platform, task_id=task_id)
 
-            # 6. 完成
-            self._update_status(task_id, TaskStatus.SUCCESS)
+            self._update_status(task_id, TaskStatus.SUCCESS, message="笔记生成完成")
             logger.info(f"笔记生成成功 (task_id={task_id})")
             return NoteResult(markdown=markdown, transcript=transcript, audio_meta=audio_meta)
 
         except Exception as exc:
-            logger.error(f"生成笔记流程异常 (task_id={task_id})：{exc}", exc_info=True)
-            self._update_status(task_id, TaskStatus.FAILED, message=str(exc))
+            logger.error(
+                f"生成笔记流程异常 (task_id={task_id}, platform={platform}, "
+                f"provider_id={provider_id}, model_name={model_name}, "
+                f"failed_at={getattr(current_phase, 'value', current_phase)})：{exc}",
+                exc_info=True,
+            )
+            self._update_status(
+                task_id,
+                TaskStatus.FAILED,
+                message=str(exc),
+                failed_at=getattr(current_phase, "value", None) or str(current_phase),
+            )
             return None
 
     @staticmethod
@@ -308,54 +388,71 @@ class NoteGenerator:
         logger.info(f"使用下载器：{downloader_cls.__class__}")
         return instance
 
-    def _update_status(self, task_id: Optional[str], status: Union[str, TaskStatus], message: Optional[str] = None):
+    def _update_status(
+        self,
+        task_id: Optional[str],
+        status: Union[str, TaskStatus],
+        message: Optional[str] = None,
+        failed_at: Optional[str] = None,
+    ):
         """
         创建或更新 {task_id}.status.json，记录当前任务状态
 
         :param task_id: 任务唯一 ID
         :param status: TaskStatus 枚举或自定义状态字符串
-        :param message: 可选消息，用于记录失败原因等
+        :param message: 当前操作说明或失败原因
+        :param failed_at: 失败时所在粗状态（仅 FAILED 时有意义）
         """
         if not task_id:
             return
 
-        NOTE_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-        status_file = NOTE_OUTPUT_DIR / f"{task_id}.status.json"
-        print(f"写入状态文件: {status_file} 当前状态: {status}")
+        out_dir = get_note_output_dir()
+        out_dir.mkdir(parents=True, exist_ok=True)
+        status_file = out_dir / f"{task_id}.status.json"
         data = {"status": status.value if isinstance(status, TaskStatus) else status}
         if message:
             data["message"] = message
+        cache = _cache_flags(task_id)
+        data["cache"] = cache
+        if failed_at:
+            data["failed_at"] = failed_at
+        elif data["status"] != TaskStatus.FAILED.value:
+            # 进行中把当前 status 也当作 phase，方便前端展示
+            data["phase"] = data["status"]
+
+        status_value = str(data["status"]).upper()
+        log_fn = logger.warning if status_value == TaskStatus.FAILED.value else logger.info
+        log_fn(
+            f"任务状态更新 (task_id={task_id}): status={data['status']}"
+            + (f", message={message}" if message else "")
+            + (f", failed_at={failed_at}" if failed_at else "")
+            + f", cache={cache}"
+        )
 
         try:
-            # First create a temporary file
             temp_file = status_file.with_suffix('.tmp')
-
-            # Write to temporary file
             with temp_file.open('w', encoding='utf-8') as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
-
-            # Atomic rename operation
             temp_file.replace(status_file)
-
-            print(f"状态文件写入成功: {status_file}")
         except Exception as e:
-            logger.error(f"写入状态文件失败 (task_id={task_id})：{e}")
-            # Try to write error to file directly as fallback
+            logger.error(f"写入状态文件失败 (task_id={task_id})：{e}", exc_info=True)
             try:
                 with status_file.open('w', encoding='utf-8') as f:
                     f.write(f"Error writing status: {str(e)}")
-            except:
-                logger.error(f"写入错误  {e}")
+            except Exception as e2:
+                logger.error(f"写入状态错误回退也失败 (task_id={task_id})：{e2}")
 
-    def _handle_exception(self, task_id, exc):
+    def _handle_exception(self, task_id, exc, failed_at: Optional[str] = None):
         logger.error(f"任务异常 (task_id={task_id})", exc_info=True)
         error_message = getattr(exc, 'detail', str(exc))
         if isinstance(error_message, dict):
             try:
                 error_message = json.dumps(error_message, ensure_ascii=False)
-            except:
+            except Exception:
                 error_message = str(error_message)
-        self._update_status(task_id, TaskStatus.FAILED, message=error_message)
+        self._update_status(
+            task_id, TaskStatus.FAILED, message=error_message, failed_at=failed_at
+        )
 
     def _download_media(
         self,
@@ -391,7 +488,18 @@ class NoteGenerator:
         :return: AudioDownloadResult 对象
         """
         task_id = audio_cache_file.stem.split("_")[0]
-        self._update_status(task_id, status_phase)
+        if audio_cache_file.exists():
+            self._update_status(
+                task_id, status_phase, message="检测到下载缓存，直接复用…"
+            )
+        elif skip_download:
+            self._update_status(
+                task_id, status_phase, message="已有字幕，仅提取视频元信息…"
+            )
+        else:
+            self._update_status(
+                task_id, status_phase, message="下载音视频中，请稍候…"
+            )
 
         # 已有缓存，尝试加载
         if audio_cache_file.exists():
@@ -409,7 +517,7 @@ class NoteGenerator:
                 audio = downloader.download(
                     video_url=video_url,
                     quality=quality,
-                    output_dir=output_path,
+                    output_dir=output_path or get_download_output_dir(),
                     need_video=False,
                     skip_download=True,
                 )
@@ -541,7 +649,16 @@ class NoteGenerator:
         :return: TranscriptResult 对象
         """
         task_id = transcript_cache_file.stem.split("_")[0]
-        self._update_status(task_id, status_phase)
+        if transcript_cache_file.exists():
+            self._update_status(
+                task_id, status_phase, message="检测到转写缓存，直接复用…"
+            )
+        else:
+            engine = getattr(self, "transcriber_type", None) or "unknown"
+            self._update_status(
+                task_id, status_phase,
+                message=f"音频转写中（引擎：{engine}），长音频可能需要几分钟…",
+            )
 
         # 已有缓存，尝试加载
         if transcript_cache_file.exists():
@@ -562,7 +679,7 @@ class NoteGenerator:
             return transcript
         except Exception as exc:
             logger.error(f"音频转写失败：{exc}")
-            self._handle_exception(task_id, exc)
+            self._handle_exception(task_id, exc, failed_at=TaskStatus.TRANSCRIBING.value)
             raise
 
     def _summarize_text(
@@ -593,7 +710,23 @@ class NoteGenerator:
         :return: 生成的 Markdown 字符串
         """
         task_id = markdown_cache_file.stem
-        self._update_status(task_id, TaskStatus.SUMMARIZING)
+        if markdown_cache_file.exists():
+            self._update_status(
+                task_id, TaskStatus.SUMMARIZING,
+                message="检测到笔记草稿缓存，尝试复用…",
+            )
+            try:
+                cached = markdown_cache_file.read_text(encoding="utf-8")
+                if cached.strip():
+                    logger.info(f"复用 markdown 缓存 ({markdown_cache_file})")
+                    return cached
+            except Exception as e:
+                logger.warning(f"读取 markdown 缓存失败，将重新总结：{e}")
+
+        self._update_status(
+            task_id, TaskStatus.SUMMARIZING,
+            message="AI 正在总结内容生成笔记，长文可能需要较长时间…",
+        )
 
         source = GPTSource(
             title=audio_meta.title,
@@ -615,7 +748,7 @@ class NoteGenerator:
             return markdown
         except Exception as exc:
             logger.error(f"GPT 总结失败：{exc}")
-            self._handle_exception(task_id, exc)
+            self._handle_exception(task_id, exc, failed_at=TaskStatus.SUMMARIZING.value)
             raise
 
     def _post_process_markdown(

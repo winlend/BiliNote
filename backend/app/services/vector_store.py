@@ -14,6 +14,14 @@ NOTE_OUTPUT_DIR = os.getenv("NOTE_OUTPUT_DIR", "note_results")
 VECTOR_DB_DIR = os.getenv("VECTOR_DB_DIR", "vector_db")
 
 
+def _note_output_dir() -> str:
+    try:
+        from app.services.path_config_manager import get_path_config_manager
+        return get_path_config_manager().get_note_output_dir()
+    except Exception:
+        return os.getenv("NOTE_OUTPUT_DIR", "note_results")
+
+
 def _chunk_markdown(markdown: str) -> list[dict]:
     """按 H2/H3 标题拆分 markdown 为语义块。"""
     sections = re.split(r'(?=^#{2,3}\s)', markdown, flags=re.MULTILINE)
@@ -117,7 +125,7 @@ class VectorStoreManager:
 
     def index_task(self, task_id: str) -> None:
         """读取笔记结果并建立向量索引。"""
-        result_path = os.path.join(NOTE_OUTPUT_DIR, f"{task_id}.json")
+        result_path = os.path.join(_note_output_dir(), f"{task_id}.json")
         if not os.path.exists(result_path):
             logger.warning(f"笔记文件不存在，跳过索引: {result_path}")
             return

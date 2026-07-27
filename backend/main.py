@@ -17,7 +17,6 @@ from app.utils.logger import get_logger
 from app import create_app
 from app.services.transcriber_config_manager import TranscriberConfigManager
 from events import register_handler
-from ffmpeg_helper import ensure_ffmpeg_or_raise
 
 logger = get_logger(__name__)
 load_dotenv()

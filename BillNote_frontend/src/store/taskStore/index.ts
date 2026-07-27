@@ -6,7 +6,24 @@ import toast from 'react-hot-toast'
 import { get, set, del } from 'idb-keyval'
 
 
-export type TaskStatus = 'PENDING' | 'RUNNING' | 'SUCCESS' | 'FAILD'
+export type TaskStatus =
+  | 'PENDING'
+  | 'PARSING'
+  | 'DOWNLOADING'
+  | 'TRANSCRIBING'
+  | 'SUMMARIZING'
+  | 'FORMATTING'
+  | 'SAVING'
+  | 'RUNNING'
+  | 'SUCCESS'
+  | 'FAILED'
+  | 'FAILD' // 历史拼写兼容
+
+export interface TaskCacheFlags {
+  audio?: boolean
+  transcript?: boolean
+  markdown?: boolean
+}
 
 export interface AudioMeta {
   cover_url: string
@@ -45,6 +62,14 @@ export interface Task {
   status: TaskStatus
   audioMeta: AudioMeta
   createdAt: string
+  /** 后端 status.json 的实时说明（进行中/失败原因） */
+  statusMessage?: string
+  /** 失败时展示的错误信息 */
+  errorMessage?: string
+  /** 失败时所在步骤，如 TRANSCRIBING */
+  failedAtStatus?: string
+  /** 服务端缓存命中情况，用于重试提示 */
+  cache?: TaskCacheFlags
   formData: {
     video_url: string
     link: undefined | boolean
@@ -84,6 +109,10 @@ export const useTaskStore = create<TaskStore>()(
               status: 'PENDING',
               markdown: '',
               platform: platform,
+              statusMessage: '排队中…',
+              errorMessage: '',
+              failedAtStatus: undefined,
+              cache: undefined,
               transcript: {
                 full_text: '',
                 language: '',
@@ -196,6 +225,9 @@ export const useTaskStore = create<TaskStore>()(
                     ...t,
                     formData: newFormData, // ✅ 显式更新 formData
                     status: 'PENDING',
+                    statusMessage: '重新排队，将尽量复用已有缓存…',
+                    errorMessage: '',
+                    failedAtStatus: undefined,
                   }
                   : t
           ),

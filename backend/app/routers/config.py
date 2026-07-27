@@ -12,7 +12,6 @@ from app.utils.path_helper import get_model_dir
 from app.services.cookie_manager import CookieConfigManager
 from app.services.transcriber_config_manager import TranscriberConfigManager
 from app.transcriber import model_download_state as dl_state
-from ffmpeg_helper import ensure_ffmpeg_or_raise
 
 logger = get_logger(__name__)
 
@@ -46,6 +45,7 @@ def update_cookie(data: CookieUpdateRequest):
 class TranscriberConfigRequest(BaseModel):
     transcriber_type: str
     whisper_model_size: Optional[str] = None
+    groq_transcriber_model: Optional[str] = None
 
 
 AVAILABLE_TRANSCRIBER_TYPES = [
@@ -114,8 +114,48 @@ def update_transcriber_config(data: TranscriberConfigRequest):
     config = transcriber_config_manager.update_config(
         transcriber_type=data.transcriber_type,
         whisper_model_size=data.whisper_model_size,
+        groq_transcriber_model=data.groq_transcriber_model,
     )
     return R.success(data=config)
+
+
+# ---- 数据与存储路径（笔记缓存 / 下载目录 / FFmpeg）----
+
+class PathConfigRequest(BaseModel):
+    note_output_dir: Optional[str] = None
+    data_dir: Optional[str] = None
+    out_dir: Optional[str] = None
+    ffmpeg_bin_path: Optional[str] = None
+
+
+@router.get("/path_config")
+def get_path_config():
+    from app.services.path_config_manager import get_path_config_manager
+    return R.success(data=get_path_config_manager().get_config())
+
+
+@router.post("/path_config")
+def update_path_config(data: PathConfigRequest):
+    from app.services.path_config_manager import get_path_config_manager
+    try:
+        cfg = get_path_config_manager().update_config(
+            note_output_dir=data.note_output_dir,
+            data_dir=data.data_dir,
+            out_dir=data.out_dir,
+            ffmpeg_bin_path=data.ffmpeg_bin_path,
+        )
+    except ValueError as e:
+        return R.error(msg=str(e))
+    # 若改了 FFmpeg 路径，强制下次健康检查重探
+    try:
+        from ffmpeg_helper import check_ffmpeg_exists
+        # 同步环境变量，使当前进程立即生效
+        if cfg.get("effective", {}).get("ffmpeg_bin_path"):
+            os.environ["FFMPEG_BIN_PATH"] = cfg["effective"]["ffmpeg_bin_path"]
+        check_ffmpeg_exists(force=True)
+    except Exception as e:
+        logger.warning(f"刷新 ffmpeg 探测失败: {e}")
+    return R.success(data=cfg, msg="路径已保存；新任务将使用新目录，旧文件不会自动迁移")
 
 
 # ---- 全局代理配置（作用于 LLM API + 转写 API + yt-dlp 下载）----
@@ -356,11 +396,9 @@ async def sys_health():
     前端 useCheckBackend 用 /sys_check 做存活判定（不依赖外部依赖），
     /sys_health 用来在设置页区分「后端没起」vs「后端起了但 ffmpeg 缺」vs「DB 写不进去」等更细的状态。
     """
-    ffmpeg_status = "ok"
-    try:
-        ensure_ffmpeg_or_raise()
-    except Exception:
-        ffmpeg_status = "missing"
+    # 健康检查只探测、不抛错；结果在进程内缓存，避免每 5s 刷 app.log
+    from ffmpeg_helper import check_ffmpeg_exists
+    ffmpeg_status = "ok" if check_ffmpeg_exists() else "missing"
 
     db_status = "ok"
     try:
@@ -453,12 +491,9 @@ async def deploy_status():
     except Exception:
         whisper_info = {"model_size": None, "transcriber_type": None, "downloaded": False}
 
-    # FFmpeg 状态
-    try:
-        ensure_ffmpeg_or_raise()
-        ffmpeg_ok = True
-    except Exception:
-        ffmpeg_ok = False
+    # FFmpeg 状态（缓存探测，不反复 spawn 子进程）
+    from ffmpeg_helper import check_ffmpeg_exists
+    ffmpeg_ok = check_ffmpeg_exists()
 
     return R.success(data={
         "backend": {"status": "running", "port": int(os.getenv("BACKEND_PORT", 8483))},

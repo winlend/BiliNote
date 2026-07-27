@@ -126,8 +126,8 @@ const NoteHistory: FC<NoteHistoryProps> = ({ onSelect, selectedId }) => {
                 </TooltipProvider>
               </div>
             </div>
-            <div className={'mt-2 flex items-center justify-between text-[10px]'}>
-              <div className="shrink-0">
+            <div className={'mt-2 flex items-center justify-between gap-2 text-[10px]'}>
+              <div className="min-w-0 flex-1">
                 {task.status === 'SUCCESS' && (
                   <div className={'bg-primary w-10 rounded p-0.5 text-center text-white'}>
                     已完成
@@ -137,11 +137,19 @@ const NoteHistory: FC<NoteHistoryProps> = ({ onSelect, selectedId }) => {
                   <div className={'w-10 rounded bg-green-500 p-0.5 text-center text-white'}>
                     等待中
                   </div>
-                ) : (
-                  <></>
-                )}
+                ) : null}
                 {task.status === 'FAILED' && (
-                  <div className={'w-10 rounded bg-red-500 p-0.5 text-center text-white'}>失败</div>
+                  <div className="flex min-w-0 flex-col gap-0.5">
+                    <div className={'w-10 rounded bg-red-500 p-0.5 text-center text-white'}>失败</div>
+                    {task.errorMessage ? (
+                      <div
+                        className="line-clamp-2 text-[10px] leading-snug text-red-500"
+                        title={task.errorMessage}
+                      >
+                        {task.errorMessage}
+                      </div>
+                    ) : null}
+                  </div>
                 )}
               </div>
 

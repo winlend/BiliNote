@@ -4,6 +4,7 @@ import {
   HardDriveDownload,
   Info,
   Activity,
+  FolderCog,
 } from 'lucide-react'
 import MenuBar, { IMenuProps } from '@/pages/SettingPage/components/menuBar.tsx'
 
@@ -27,13 +28,12 @@ const Menu = () => {
       icon: <HardDriveDownload />,
       path: '/settings/download',
     },
-    // //其他配置
-    // {
-    //   id: 'prompt',
-    //   name: '提示词设置',
-    //   icon: <SquareChevronRight />,
-    //   path: '/settings/prompt',
-    // },
+    {
+      id: 'storage',
+      name: '数据与存储',
+      icon: <FolderCog />,
+      path: '/settings/storage',
+    },
     {
       id: 'monitor',
       name: '部署监控',

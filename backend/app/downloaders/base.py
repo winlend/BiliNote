@@ -18,7 +18,11 @@ class Downloader(ABC):
     def __init__(self):
         #TODO 需要修改为可配置
         self.quality = QUALITY_MAP.get('fast')
-        self.cache_data=getenv('DATA_DIR')
+        try:
+            from app.services.path_config_manager import get_path_config_manager
+            self.cache_data = get_path_config_manager().get_data_dir()
+        except Exception:
+            self.cache_data = getenv('DATA_DIR') or 'data'
 
     @abstractmethod
     def download(self, video_url: str, output_dir: str = None,

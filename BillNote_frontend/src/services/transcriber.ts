@@ -3,6 +3,8 @@ import request from '@/utils/request'
 export interface TranscriberConfig {
   transcriber_type: string
   whisper_model_size: string
+  /** Groq 音频转写模型（与供应商 chat 模型无关） */
+  groq_transcriber_model?: string
   available_types: { value: string; label: string }[]
   whisper_model_sizes: string[]
   /** 内置模型映射：size → HF repo_id */
@@ -35,6 +37,7 @@ export const getTranscriberConfig = async (): Promise<TranscriberConfig> => {
 export const updateTranscriberConfig = async (data: {
   transcriber_type: string
   whisper_model_size?: string
+  groq_transcriber_model?: string
 }) => {
   return await request.post('/transcriber_config', data)
 }

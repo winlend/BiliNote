@@ -41,18 +41,26 @@ class TranscriberConfigManager:
                 "whisper_model_size",
                 os.getenv("WHISPER_MODEL_SIZE", "tiny"),
             ),
+            # Groq 音频转写模型（与供应商 chat 模型无关）
+            "groq_transcriber_model": data.get(
+                "groq_transcriber_model",
+                os.getenv("GROQ_TRANSCRIBER_MODEL", "whisper-large-v3-turbo"),
+            ),
         }
 
     def update_config(
         self,
         transcriber_type: str,
         whisper_model_size: Optional[str] = None,
+        groq_transcriber_model: Optional[str] = None,
     ) -> Dict[str, Any]:
         """更新转写器配置并持久化。"""
         data = self._read()
         data["transcriber_type"] = transcriber_type
         if whisper_model_size is not None:
             data["whisper_model_size"] = whisper_model_size
+        if groq_transcriber_model is not None:
+            data["groq_transcriber_model"] = groq_transcriber_model.strip() or "whisper-large-v3-turbo"
         self._write(data)
         return self.get_config()
 
@@ -61,6 +69,9 @@ class TranscriberConfigManager:
 
     def get_whisper_model_size(self) -> str:
         return self.get_config()["whisper_model_size"]
+
+    def get_groq_transcriber_model(self) -> str:
+        return self.get_config().get("groq_transcriber_model") or "whisper-large-v3-turbo"
 
     def is_model_ready(self) -> Dict[str, Any]:
         """当前转写器是否就绪可用。

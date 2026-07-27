@@ -68,13 +68,23 @@ class VideoRequest(BaseModel):
         return v
 
 
+# 兼容旧引用；运行时请用 _note_output_dir()
 NOTE_OUTPUT_DIR = os.getenv("NOTE_OUTPUT_DIR", "note_results")
 UPLOAD_DIR = "uploads"
 
 
+def _note_output_dir() -> str:
+    try:
+        from app.services.path_config_manager import get_path_config_manager
+        return get_path_config_manager().get_note_output_dir()
+    except Exception:
+        return os.getenv("NOTE_OUTPUT_DIR", "note_results")
+
+
 def save_note_to_file(task_id: str, note):
-    os.makedirs(NOTE_OUTPUT_DIR, exist_ok=True)
-    with open(os.path.join(NOTE_OUTPUT_DIR, f"{task_id}.json"), "w", encoding="utf-8") as f:
+    out = _note_output_dir()
+    os.makedirs(out, exist_ok=True)
+    with open(os.path.join(out, f"{task_id}.json"), "w", encoding="utf-8") as f:
         json.dump(asdict(note), f, ensure_ascii=False, indent=2)
 
 
@@ -105,8 +115,9 @@ def _persist_prefetched_transcript(task_id: str, transcript: dict) -> None:
         "segments": cleaned_segments,
     }
 
-    os.makedirs(NOTE_OUTPUT_DIR, exist_ok=True)
-    target = os.path.join(NOTE_OUTPUT_DIR, f"{task_id}_transcript.json")
+    out = _note_output_dir()
+    os.makedirs(out, exist_ok=True)
+    target = os.path.join(out, f"{task_id}_transcript.json")
     with open(target, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
     logger.info(f"已写入客户端预取字幕缓存: {target} ({len(cleaned_segments)} 段)")
@@ -236,8 +247,20 @@ def generate_note(data: VideoRequest, background_tasks: BackgroundTasks):
 
 @router.get("/task_status/{task_id}")
 def get_task_status(task_id: str):
-    status_path = os.path.join(NOTE_OUTPUT_DIR, f"{task_id}.status.json")
-    result_path = os.path.join(NOTE_OUTPUT_DIR, f"{task_id}.json")
+    out = _note_output_dir()
+    status_path = os.path.join(out, f"{task_id}.status.json")
+    result_path = os.path.join(out, f"{task_id}.json")
+
+    def _extras(status_content: dict) -> dict:
+        return {
+            "failed_at": status_content.get("failed_at"),
+            "cache": status_content.get("cache") or {
+                "audio": os.path.exists(os.path.join(out, f"{task_id}_audio.json")),
+                "transcript": os.path.exists(os.path.join(out, f"{task_id}_transcript.json")),
+                "markdown": os.path.exists(os.path.join(out, f"{task_id}_markdown.md")),
+            },
+            "phase": status_content.get("phase") or status_content.get("status"),
+        }
 
     # 优先读状态文件
     if os.path.exists(status_path):
@@ -246,6 +269,7 @@ def get_task_status(task_id: str):
 
         status = status_content.get("status")
         message = status_content.get("message", "")
+        extra = _extras(status_content)
 
         if status == TaskStatus.SUCCESS.value:
             # 成功状态的话，继续读取最终笔记内容
@@ -256,24 +280,33 @@ def get_task_status(task_id: str):
                     "status": status,
                     "result": result_content,
                     "message": message,
-                    "task_id": task_id
+                    "task_id": task_id,
+                    **extra,
                 })
             else:
                 # 理论上不会出现，保险处理
                 return R.success({
                     "status": TaskStatus.PENDING.value,
                     "message": "任务完成，但结果文件未找到",
-                    "task_id": task_id
+                    "task_id": task_id,
+                    **extra,
                 })
 
+        # FAILED 也走 success 包装，避免前端 axios 当请求错误；业务靠 data.status 判断
         if status == TaskStatus.FAILED.value:
-            return R.error(message or "任务失败", code=500)
+            return R.success({
+                "status": status,
+                "message": message or "任务失败",
+                "task_id": task_id,
+                **extra,
+            })
 
         # 处理中状态
         return R.success({
             "status": status,
             "message": message,
-            "task_id": task_id
+            "task_id": task_id,
+            **extra,
         })
 
     # 没有状态文件，但有结果
@@ -283,14 +316,14 @@ def get_task_status(task_id: str):
         return R.success({
             "status": TaskStatus.SUCCESS.value,
             "result": result_content,
-            "task_id": task_id
+            "task_id": task_id,
         })
 
     # 什么都没有，默认PENDING
     return R.success({
         "status": TaskStatus.PENDING.value,
         "message": "任务排队中",
-        "task_id": task_id
+        "task_id": task_id,
     })
 
 
