@@ -1,304 +1,570 @@
-import datetime
+"""抖音下载器。
+
+历史实现走 www.douyin.com/aweme/v1/web/aweme/detail + a_bogus 签名。
+该 Web API 对非浏览器请求常返回 HTTP 200 空 body，进而触发：
+
+    ('请求失败:', JSONDecodeError('Expecting value: line 1 column 1 (char 0)'))
+
+修复方案（对齐 issue #162 评论 https://github.com/JefferyHcool/BiliNote/issues/162#issuecomment-4333005118）：
+改用 iesdouyin.com/share/video/{id}/ 分享页。该页服务端渲染，把作品数据内嵌在
+window._ROUTER_DATA / RENDER_DATA 中，无需 a_bogus、无需 Cookie。
+"""
+from __future__ import annotations
+
 import json
 import os
 import re
-from typing import Union, Optional
-from urllib.parse import quote, urlencode
+import subprocess
+import urllib.parse
+from abc import ABC
+from typing import Any, Dict, List, Optional, Union
 
-import httpx
 import requests
-from pydantic import BaseModel
 
 from app.downloaders.base import Downloader
-from app.downloaders.douyin_helper.abogus import ABogus
 from app.enmus.note_enums import DownloadQuality
 from app.models.audio_model import AudioDownloadResult
-from app.services.cookie_manager import CookieConfigManager
+from app.utils.logger import get_logger
 from app.utils.path_helper import get_data_dir
-from dotenv import load_dotenv
 
-load_dotenv()
-DOUYIN_DOMAIN = "https://www.douyin.com"
+logger = get_logger(__name__)
 
-cfm=CookieConfigManager()
-def get_timestamp(unit: str = "milli"):
-    """
-    根据给定的单位获取当前时间 (Get the current time based on the given unit)
+DOUYIN_SHORT_URL = re.compile(r"https?://v\.douyin\.com/[\w\-]+/?", re.I)
+DOUYIN_LONG_URL = re.compile(r"https?://(?:www\.)?douyin\.com/(?:video|note)/(\d+)", re.I)
+IESDOUYIN_URL = re.compile(r"https?://(?:www\.)?iesdouyin\.com/share/(?:video|note)/(\d+)", re.I)
+URL_IN_TEXT = re.compile(r"https?://[^\s<>\"']+")
 
-    Args:
-        unit (str): 时间单位，可以是 "milli"、"sec"、"min" 等
-            (The time unit, which can be "milli", "sec", "min", etc.)
+# 桌面 UA：解析短链重定向
+DESKTOP_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/131.0.0.0 Safari/537.36"
+    ),
+    "Referer": "https://www.douyin.com/",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+}
 
-    Returns:
-        int: 根据给定单位的当前时间 (The current time based on the given unit)
-    """
-
-    now = datetime.datetime.utcnow() - datetime.datetime(1970, 1, 1)
-    if unit == "milli":
-        return int(now.total_seconds() * 1000)
-    elif unit == "sec":
-        return int(now.total_seconds())
-    elif unit == "min":
-        return int(now.total_seconds() / 60)
-    else:
-        raise ValueError("Unsupported time unit")
-
-
-class DouyinConfig:
-    HEADERS = {
-        "Accept-Language": "zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.212 Safari/537.36",
-        "Referer": "https://www.douyin.com/",
-        "Cookie": None
-    }
-
-    PROXIES = {
-        "http": None,
-        "https": None,
-    }
-
-    MS_TOKEN = {
-        "url": "https://mssdk.bytedance.com/web/report",
-        "magic": 538969122,
-        "version": 1,
-        "dataType": 8,
-        "strData": "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",
-        "User-Agent": "5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36 Edg/117.0.2045.47"
-    }
-
-    TTWID = {
-        "url": "https://ttwid.bytedance.com/ttwid/union/register/",
-        "data": '{"region":"cn","aid":1768,"needFid":false,"service":"www.ixigua.com","migrate_info":{"ticket":"","source":"node"},"cbUrlProtocol":"https","union":true}'
-    }
+# 移动 UA：iesdouyin 分享页才带完整 SSR
+MOBILE_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) "
+        "AppleWebKit/605.1.15 (KHTML, like Gecko) "
+        "Version/16.6 Mobile/15E148 Safari/604.1"
+    ),
+    "Referer": "https://www.douyin.com/",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+}
 
 
-class BaseRequestModel(BaseModel):
-    device_platform: str = "webapp"
-    aid: str = "6383"
-    channel: str = "channel_pc_web"
-    pc_client_type: int = 1
-    version_code: str = "290100"
-    version_name: str = "29.1.0"
-    cookie_enabled: str = "true"
-    screen_width: int = 1920
-    screen_height: int = 1080
-    browser_language: str = "zh-CN"
-    browser_platform: str = "Win32"
-    browser_name: str = "Chrome"
-    browser_version: str = "130.0.0.0"
-    browser_online: str = "true"
-    engine_name: str = "Blink"
-    engine_version: str = "130.0.0.0"
-    os_name: str = "Windows"
-    os_version: str = "10"
-    cpu_core_num: int = 12
-    device_memory: int = 8
-    platform: str = "PC"
-    downlink: str = "10"
-    effective_type: str = "4g"
-    from_user_page: str = "1"
-    locate_query: str = "false"
-    need_time_list: str = "1"
-    pc_libra_divert: str = "Windows"
-    publish_video_strategy_type: str = "2"
-    round_trip_time: str = "0"
-    show_live_replay_strategy: str = "1"
-    time_list_query: str = "0"
-    whale_cut_token: str = ""
-    update_version_code: str = "170400"
-    msToken: str = None
+def _first_url(node: Any) -> str:
+    if not isinstance(node, dict):
+        return ""
+    urls = node.get("url_list") or node.get("urlList") or []
+    if isinstance(urls, list) and urls:
+        return str(urls[0])
+    uri = node.get("uri") or node.get("url")
+    return str(uri) if uri else ""
 
 
-class DouyinDownloader(Downloader):
+def _best_play_url(video: dict) -> str:
+    """无水印播放地址：优先 bit_rate 最高档，再 play_addr。"""
+    bit_rate = video.get("bit_rate") or video.get("bitRateList") or []
+    if isinstance(bit_rate, list) and bit_rate:
+        sorted_rates = sorted(
+            bit_rate,
+            key=lambda x: x.get("bit_rate", x.get("bitRate", 0)) if isinstance(x, dict) else 0,
+            reverse=True,
+        )
+        for item in sorted_rates:
+            if not isinstance(item, dict):
+                continue
+            play = item.get("play_addr") or item.get("playAddr")
+            url = _first_url(play) if play else ""
+            # bit_rate 里常把最高清放在 url_list 末尾
+            if isinstance(play, dict):
+                urls = play.get("url_list") or play.get("urlList") or []
+                if urls:
+                    url = str(urls[-1])
+            if url:
+                return url.replace("playwm", "play")
+
+    for key in ("play_addr", "playAddr", "download_addr", "downloadAddr"):
+        play = video.get(key)
+        if not play:
+            continue
+        urls = []
+        if isinstance(play, dict):
+            urls = play.get("url_list") or play.get("urlList") or []
+        if urls:
+            return str(urls[-1]).replace("playwm", "play")
+        url = _first_url(play)
+        if url:
+            return url.replace("playwm", "play")
+    return ""
+
+
+def _music_url(aweme: dict) -> str:
+    music = aweme.get("music") or {}
+    if not isinstance(music, dict):
+        return ""
+    play = music.get("play_url") or music.get("playUrl") or {}
+    if isinstance(play, str) and play.startswith("http"):
+        return play
+    url = _first_url(play)
+    if url:
+        return url
+    # 部分结构只有 uri
+    uri = play.get("uri") if isinstance(play, dict) else None
+    if isinstance(uri, str) and uri.startswith("http"):
+        return uri
+    return ""
+
+
+def _parse_render_data(html: str) -> dict:
+    """从分享页 HTML 解析 SSR JSON。"""
+    match = re.search(
+        r'<script[^>]+id=["\']RENDER_DATA["\'][^>]*>(.*?)</script>',
+        html,
+        re.DOTALL | re.I,
+    )
+    if match:
+        try:
+            decoded = urllib.parse.unquote(match.group(1).strip())
+            data = json.loads(decoded)
+            if isinstance(data, dict):
+                return data
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+            pass
+
+    # 非贪婪对大 JSON 不可靠；用括号平衡截取 window._ROUTER_DATA = {...}
+    marker = "window._ROUTER_DATA"
+    idx = html.find(marker)
+    if idx < 0:
+        marker = "window._ROUTER_DATA"
+        idx = html.find("_ROUTER_DATA")
+    if idx >= 0:
+        eq = html.find("=", idx)
+        if eq > 0:
+            start = html.find("{", eq)
+            if start > 0:
+                depth = 0
+                in_str = False
+                escape = False
+                end = -1
+                for i in range(start, len(html)):
+                    ch = html[i]
+                    if in_str:
+                        if escape:
+                            escape = False
+                        elif ch == "\\":
+                            escape = True
+                        elif ch == '"':
+                            in_str = False
+                        continue
+                    if ch == '"':
+                        in_str = True
+                    elif ch == "{":
+                        depth += 1
+                    elif ch == "}":
+                        depth -= 1
+                        if depth == 0:
+                            end = i + 1
+                            break
+                if end > start:
+                    try:
+                        data = json.loads(html[start:end])
+                        if isinstance(data, dict):
+                            return data
+                    except json.JSONDecodeError:
+                        pass
+
+    # 宽松正则兜底
+    match = re.search(
+        r"window\._ROUTER_DATA\s*=\s*(\{.*?\})\s*;?\s*</script>",
+        html,
+        re.DOTALL,
+    )
+    if match:
+        try:
+            data = json.loads(match.group(1))
+            if isinstance(data, dict):
+                return data
+        except json.JSONDecodeError:
+            pass
+    return {}
+
+
+def _find_aweme_detail(data: dict) -> dict:
+    """从 _ROUTER_DATA / RENDER_DATA 嵌套结构里取出作品对象。"""
+    loader_data = data.get("loaderData") or {}
+    if isinstance(loader_data, dict):
+        for _key, value in loader_data.items():
+            if not isinstance(value, dict):
+                continue
+            video_info_res = value.get("videoInfoRes") or value.get("video_info_res") or {}
+            if isinstance(video_info_res, dict):
+                item_list = video_info_res.get("item_list") or video_info_res.get("itemList")
+                if isinstance(item_list, list) and item_list and isinstance(item_list[0], dict):
+                    return item_list[0]
+
+    if "aweme" in data and isinstance(data["aweme"], dict):
+        detail = data["aweme"]
+        if "detail" in detail and isinstance(detail["detail"], dict):
+            return detail["detail"]
+        return detail
+
+    # 广度优先找 item_list / aweme_detail
+    stack: List[Any] = [data]
+    seen = 0
+    while stack and seen < 200:
+        seen += 1
+        cur = stack.pop()
+        if not isinstance(cur, dict):
+            continue
+        for k, v in cur.items():
+            if k in ("item_list", "itemList") and isinstance(v, list) and v and isinstance(v[0], dict):
+                return v[0]
+            if k in ("aweme_detail", "awemeDetail") and isinstance(v, dict):
+                return v
+            if isinstance(v, (dict, list)):
+                if isinstance(v, dict):
+                    stack.append(v)
+                else:
+                    stack.extend(x for x in v if isinstance(x, dict))
+    return {}
+
+
+def _normalize_duration(raw: Any) -> float:
+    try:
+        val = float(raw or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    # 抖音常见毫秒
+    if val > 1000:
+        return val / 1000.0
+    return val
+
+
+class DouyinDownloader(Downloader, ABC):
     def __init__(self, cookie=None):
         super().__init__()
-        self.headers_config = DouyinConfig.HEADERS.copy()
-        self.headers_config["Cookie"] = cfm.get('douyin')
-        print(self.headers_config)
-        self.proxies_config = DouyinConfig.PROXIES.copy()
-        self.ttwid_config = DouyinConfig.TTWID.copy()
-        self.ms_token_config = DouyinConfig.MS_TOKEN.copy()
+        self.session = requests.Session()
+        self.session.headers.update(DESKTOP_HEADERS)
 
     @staticmethod
     def find_url(string: str) -> list:
-        url = re.findall('http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\(\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', string)
-        return url
+        return URL_IN_TEXT.findall(string or "")
 
     def extract_video_id(self, url: str) -> str:
-        video_url = self.find_url(url)
+        """从分享文案 / 短链 / 长链中解析 aweme_id。"""
+        text = (url or "").strip()
+        if not text:
+            return ""
 
-        if len(video_url):
-            video_url = video_url[0]
+        for pattern in (DOUYIN_LONG_URL, IESDOUYIN_URL):
+            m = pattern.search(text)
+            if m:
+                return m.group(1)
+
+        # 文案里的短链 / 任意 douyin 链接
+        candidates = self.find_url(text)
+        if not candidates and text.startswith("http"):
+            candidates = [text]
+        # 优先短链
+        ordered = sorted(
+            candidates,
+            key=lambda u: (0 if "v.douyin.com" in u else 1, len(u)),
+        )
+        for link in ordered:
+            m = DOUYIN_SHORT_URL.search(link) or (link if "v.douyin.com" in link else None)
+            target = m.group(0) if hasattr(m, "group") else link
             try:
-                response = requests.head(video_url, allow_redirects=True)
-                url = response.url
-            except Exception as e:
-                return ""
-        patterns = [
-            r'video/(\d+)',
-            r'aweme_id=(\d+)',
-        ]
-        for pattern in patterns:
-            match = re.search(pattern, url)
-            if match:
-                return match.group(1)
+                resp = self.session.get(
+                    target,
+                    allow_redirects=True,
+                    timeout=20,
+                    headers=DESKTOP_HEADERS,
+                )
+                final = str(resp.url)
+                for pattern in (DOUYIN_LONG_URL, IESDOUYIN_URL):
+                    mm = pattern.search(final)
+                    if mm:
+                        return mm.group(1)
+                # 有时仍停在短链页，再扫 Location 链
+                for pattern in (DOUYIN_LONG_URL, IESDOUYIN_URL):
+                    mm = pattern.search(resp.text or "")
+                    if mm:
+                        return mm.group(1)
+            except requests.RequestException as e:
+                logger.warning(f"解析抖音短链失败: {target} ({e})")
+                continue
+
+            for pattern in (DOUYIN_LONG_URL, IESDOUYIN_URL):
+                mm = pattern.search(link)
+                if mm:
+                    return mm.group(1)
         return ""
 
-    def gen_real_msToken(self) -> str:
+    def fetch_video_info(self, video_url: str) -> dict:
+        """拉取作品详情，返回兼容旧字段的包装：{"aweme_detail": {...}}。"""
+        aweme_id = self.extract_video_id(video_url)
+        if not aweme_id:
+            raise ValueError("无法从链接中提取抖音视频 ID，请检查链接是否有效")
+
+        share_url = f"https://www.iesdouyin.com/share/video/{aweme_id}/"
+        logger.info(f"抖音分享页解析: id={aweme_id}, url={share_url}")
         try:
-            payload = json.dumps(
-                {
-                    "magic": self.ms_token_config["magic"],
-                    "version": self.ms_token_config["version"],
-                    "dataType": self.ms_token_config["dataType"],
-                    "strData": self.ms_token_config["strData"],
-                    "tspFromClient": get_timestamp(),
-                }
+            resp = self.session.get(
+                share_url,
+                headers=MOBILE_HEADERS,
+                timeout=30,
+                allow_redirects=True,
             )
-            headers = {
-                "User-Agent": self.headers_config["User-Agent"],
-                "Content-Type": "application/json",
-            }
-            transport = httpx.HTTPTransport(retries=5)
-            with httpx.Client(transport=transport) as client:
-                try:
-                    response = client.post(
-                        self.ms_token_config["url"], content=payload, headers=headers
-                    )
-                    response.raise_for_status()
+        except requests.RequestException as e:
+            raise ValueError(f"请求抖音分享页失败: {e}") from e
 
-                    msToken = str(httpx.Cookies(response.cookies).get("msToken"))
-                    if len(msToken) not in [120, 128]:
-                        raise ValueError("响应内容：{0}， Douyin msToken API 的响应内容不符合要求。".format(msToken))
+        if resp.status_code != 200:
+            raise ValueError(f"抖音分享页 HTTP {resp.status_code}，视频可能不存在或需登录")
 
-                    return msToken
-                except Exception as e:
-                    raise ValueError("Douyin msToken API 请求失败：{0}".format(e))
-        except Exception as e:
-            raise ValueError("Douyin msToken API{0}".format(e))
+        html = resp.text or ""
+        if not html.strip():
+            raise ValueError("抖音分享页返回空内容")
 
-    def fetch_video_info(self, video_url: str) -> json:
+        render_data = _parse_render_data(html)
+        if not render_data:
+            raise ValueError(
+                "无法解析抖音页面数据（缺少 _ROUTER_DATA/RENDER_DATA）。"
+                "抖音可能已改版，或当前网络被拦截。"
+            )
+
+        aweme = _find_aweme_detail(render_data)
+        if not aweme:
+            raise ValueError("无法提取作品信息，视频可能为私密、已删除或页面结构变更")
+
+        # 补齐 id
+        if not aweme.get("aweme_id"):
+            aweme["aweme_id"] = aweme.get("awemeId") or aweme_id
+
+        return {"aweme_detail": aweme}
+
+    def _resolve_output_dir(self, output_dir: Optional[str]) -> str:
+        if output_dir:
+            path = output_dir
+        else:
+            try:
+                path = get_data_dir()
+            except Exception:
+                path = self.cache_data
+        if not path:
+            path = self.cache_data or "data"
+        os.makedirs(path, exist_ok=True)
+        return path
+
+    def _build_meta(self, aweme: dict) -> Dict[str, Any]:
+        aweme_id = str(aweme.get("aweme_id") or aweme.get("awemeId") or "")
+        title = (
+            aweme.get("item_title")
+            or aweme.get("itemTitle")
+            or aweme.get("desc")
+            or aweme.get("preview_title")
+            or aweme_id
+            or "douyin_video"
+        )
+        title = str(title).strip().replace("\n", " ")[:80]
+
+        video = aweme.get("video") or {}
+        duration = _normalize_duration(
+            video.get("duration")
+            or aweme.get("duration")
+            or (aweme.get("video") or {}).get("duration")
+        )
+
+        cover = ""
+        for key in ("cover_original_scale", "origin_cover", "originCover", "cover", "dynamic_cover", "dynamicCover"):
+            node = video.get(key) if isinstance(video, dict) else None
+            cover = _first_url(node)
+            if cover:
+                break
+
+        tags: List[str] = []
+        for tag in aweme.get("video_tag") or aweme.get("videoTag") or []:
+            if isinstance(tag, dict) and tag.get("tag_name"):
+                tags.append(str(tag["tag_name"]))
+        caption = aweme.get("caption") or aweme.get("desc") or ""
+        raw_tags = (str(caption) + " " + " ".join(tags)).strip()
+
+        return {
+            "aweme_id": aweme_id,
+            "title": title,
+            "duration": duration,
+            "cover_url": cover,
+            "tags": raw_tags,
+            "music_url": _music_url(aweme),
+            "video_url": _best_play_url(video if isinstance(video, dict) else {}),
+        }
+
+    def _download_binary(self, url: str, dest: str, referer: str = "https://www.douyin.com/") -> None:
+        headers = {
+            **MOBILE_HEADERS,
+            "Referer": referer,
+        }
+        with self.session.get(url, headers=headers, stream=True, timeout=120, allow_redirects=True) as resp:
+            resp.raise_for_status()
+            with open(dest, "wb") as f:
+                for chunk in resp.iter_content(1024 * 256):
+                    if chunk:
+                        f.write(chunk)
+
+    def _ffmpeg_to_mp3(self, src: str, dest: str) -> None:
         try:
-
-            aweme_id = self.extract_video_id(video_url)
-            kwargs = self.headers_config
-            print("@kwargs:", kwargs)
-            base_params = BaseRequestModel().model_dump()
-            base_params["msToken"] = self.gen_real_msToken()
-
-            base_params["aweme_id"] = aweme_id
-            bogus = ABogus()
-            ab_value = bogus.get_value(base_params)
-            a_bogus = quote(ab_value, safe='')
-            print("@a_bogus:", a_bogus)
-            print(base_params)
-            query_str = urlencode(base_params)
-            full_url = f"{DOUYIN_DOMAIN}/aweme/v1/web/aweme/detail/?{query_str}&a_bogus={a_bogus}"
-
-            print("Request URL:", full_url)
-
-
-            response = requests.get(full_url, headers=kwargs)
-
-            print("Response JSON:", response.content)
-            return response.json()
-        except Exception as e:
-            print("请求失败:", e)
-            raise ValueError("请求失败:", e)
-        # print(kwargs)
+            subprocess.run(
+                [
+                    "ffmpeg",
+                    "-y",
+                    "-i",
+                    src,
+                    "-vn",
+                    "-acodec",
+                    "libmp3lame",
+                    "-q:a",
+                    "4",
+                    dest,
+                ],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except FileNotFoundError as e:
+            raise ValueError("未找到 ffmpeg，无法从视频提取音频，请先安装并配置 FFMPEG_BIN_PATH") from e
+        except subprocess.CalledProcessError as e:
+            raise ValueError(f"ffmpeg 转码失败: {e}") from e
 
     def download(
-            self,
-            video_url: str,
-            output_dir: Union[str, None] = None,
-            quality: DownloadQuality = "fast",
-            need_video: Optional[bool] = False
+        self,
+        video_url: str,
+        output_dir: Union[str, None] = None,
+        quality: DownloadQuality = "fast",
+        need_video: Optional[bool] = False,
+        skip_download: bool = False,
     ) -> AudioDownloadResult:
-        try:
-            print(
-                f"正在下载视频: {video_url}，保存路径: {output_dir}，质量: {quality}"
-            )
-            if output_dir is None:
-                output_dir = get_data_dir()
-            if not output_dir:
-                output_dir = self.cache_data
-            os.makedirs(output_dir, exist_ok=True)
+        output_dir = self._resolve_output_dir(output_dir)
+        logger.info(f"抖音下载: url={video_url!r}, dir={output_dir}, skip_download={skip_download}")
 
-            output_path = os.path.join(output_dir, "%(id)s.%(ext)s")
+        payload = self.fetch_video_info(video_url)
+        aweme = payload["aweme_detail"]
+        meta = self._build_meta(aweme)
+        aweme_id = meta["aweme_id"]
+        if not aweme_id:
+            raise ValueError("作品缺少 aweme_id")
 
-            video_data = self.fetch_video_info(video_url)
-            output_path = output_path % {
-                "id": video_data['aweme_detail']['aweme_id'],
-                "ext": "mp3",
-            }
-            url = video_data['aweme_detail']['music']['play_url']['uri']
-            # 下载音频
-            audio_data = requests.get(url)
-            with open(output_path, 'wb') as f:
-                f.write(audio_data.content)
-            print(url)
-            tags = []
-            for tag in video_data['aweme_detail']['video_tag']:
-                if tag['tag_name']:
-                    tags.append(tag['tag_name'])
+        mp3_path = os.path.join(output_dir, f"{aweme_id}.mp3")
+        mp4_path = os.path.join(output_dir, f"{aweme_id}.mp4")
 
+        if skip_download:
             return AudioDownloadResult(
-                file_path=output_path,
-                title=video_data['aweme_detail']['item_title'],
-                duration=video_data['aweme_detail']['video']['duration'],
-                cover_url=video_data['aweme_detail']['video']['cover_original_scale']['url_list'][0] if
-                video_data['aweme_detail']['video']['cover'] else video_data['video']['big_thumbs']['img_url'],
+                file_path=mp3_path if os.path.exists(mp3_path) else "",
+                title=meta["title"],
+                duration=meta["duration"],
+                cover_url=meta["cover_url"] or None,
                 platform="douyin",
-                video_id=video_data['aweme_detail']['aweme_id'],
-                raw_info={
-                    'tags': video_data['aweme_detail']['caption'] + ''.join(tags),
-                },
-                video_path=None  # ❗音频下载不包含视频路径
+                video_id=aweme_id,
+                raw_info={"tags": meta["tags"]},
+                video_path=mp4_path if os.path.exists(mp4_path) else None,
             )
-        except Exception as e:
-            raise e
+
+        # 已有音频缓存
+        if os.path.exists(mp3_path) and os.path.getsize(mp3_path) > 0:
+            logger.info(f"复用已有抖音音频: {mp3_path}")
+            return AudioDownloadResult(
+                file_path=mp3_path,
+                title=meta["title"],
+                duration=meta["duration"],
+                cover_url=meta["cover_url"] or None,
+                platform="douyin",
+                video_id=aweme_id,
+                raw_info={"tags": meta["tags"]},
+                video_path=mp4_path if os.path.exists(mp4_path) else None,
+            )
+
+        video_path_out: Optional[str] = None
+        music_url = meta["music_url"]
+        video_url_cdn = meta["video_url"]
+
+        # 1) 优先背景音乐直链（体积小）
+        if music_url:
+            try:
+                logger.info("下载抖音背景音乐…")
+                self._download_binary(music_url, mp3_path)
+                if os.path.getsize(mp3_path) > 0:
+                    if need_video and video_url_cdn and not os.path.exists(mp4_path):
+                        try:
+                            self._download_binary(video_url_cdn, mp4_path)
+                            video_path_out = mp4_path
+                        except Exception as e:
+                            logger.warning(f"视频附件下载失败（音频已成功）: {e}")
+                    return AudioDownloadResult(
+                        file_path=mp3_path,
+                        title=meta["title"],
+                        duration=meta["duration"],
+                        cover_url=meta["cover_url"] or None,
+                        platform="douyin",
+                        video_id=aweme_id,
+                        raw_info={"tags": meta["tags"]},
+                        video_path=video_path_out or (mp4_path if os.path.exists(mp4_path) else None),
+                    )
+            except Exception as e:
+                logger.warning(f"背景音乐下载失败，将回退视频抽音: {e}")
+                if os.path.exists(mp3_path):
+                    try:
+                        os.remove(mp3_path)
+                    except OSError:
+                        pass
+
+        # 2) 下视频再 ffmpeg 抽音
+        if not video_url_cdn:
+            raise ValueError("分享页未提供可下载的音频或视频地址")
+
+        logger.info("下载抖音视频并提取音频…")
+        self._download_binary(video_url_cdn, mp4_path)
+        video_path_out = mp4_path
+        self._ffmpeg_to_mp3(mp4_path, mp3_path)
+
+        if need_video is False and os.path.exists(mp4_path):
+            # 与历史行为接近：默认只要音频；保留 mp4 供截图链路，不强制删
+            pass
+
+        return AudioDownloadResult(
+            file_path=mp3_path,
+            title=meta["title"],
+            duration=meta["duration"],
+            cover_url=meta["cover_url"] or None,
+            platform="douyin",
+            video_id=aweme_id,
+            raw_info={"tags": meta["tags"]},
+            video_path=video_path_out,
+        )
 
     def download_video(self, video_url: str, output_dir: Union[str, None] = None) -> str:
-
-        try:
-
-            if output_dir is None:
-                output_dir = get_data_dir()
-            if not output_dir:
-                output_dir = self.cache_data
-            os.makedirs(output_dir, exist_ok=True)
-
-            video_id = self.extract_video_id(video_url)
-            video_path = os.path.join(output_dir, f"{video_id}.mp4")
-            if os.path.exists(video_path):
-                return video_path
+        output_dir = self._resolve_output_dir(output_dir)
+        payload = self.fetch_video_info(video_url)
+        meta = self._build_meta(payload["aweme_detail"])
+        aweme_id = meta["aweme_id"]
+        mp4_path = os.path.join(output_dir, f"{aweme_id}.mp4")
+        if os.path.exists(mp4_path) and os.path.getsize(mp4_path) > 0:
+            return mp4_path
+        if not meta["video_url"]:
+            raise ValueError("无法获取抖音视频下载地址")
+        self._download_binary(meta["video_url"], mp4_path)
+        return mp4_path
 
 
-            output_path = os.path.join(output_dir, "%(id)s.%(ext)s")
-
-            video_data = self.fetch_video_info(video_url)
-            output_path = output_path % {
-                "id": video_data['aweme_detail']['aweme_id'],
-                "ext": "mp4",
-            }
-
-            url=video_data['aweme_detail']['video']['download_addr']['url_list'][0]
-            _data = requests.get(url,allow_redirects=True,headers=self.headers_config)
-
-            with open(output_path, 'wb') as f:
-                f.write(_data.content)
-
-            return output_path
-        except Exception as e:
-            print("请求失败:", e)
-            raise ValueError("请求失败:", e)
-
-
-
-if __name__ == '__main__':
-    dy = DouyinDownloader(
-        cookie='')
-
-    dy.download(
-        '7.43 11/16 gba:/ j@P.xS 以“马成钢”的视角打开《抓娃娃》笼中鸟，何时飞 # 独白 # 人物故事  https://v.douyin.com/0pcFVdG_lx4/ 复制此链接，打开Dou音搜索，直接观看视频！'
+if __name__ == "__main__":
+    dy = DouyinDownloader()
+    print(
+        dy.fetch_video_info(
+            "https://www.iesdouyin.com/share/video/7123456789012345678/"
+        )
     )
