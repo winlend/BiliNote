@@ -3,7 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { FolderOpen, HardDrive, Loader2, Save, Info } from 'lucide-react'
+import { FolderOpen, HardDrive, Loader2, Save, Info, Sparkles } from 'lucide-react'
 import { toast } from 'react-hot-toast'
 import {
   getPathConfig,
@@ -16,10 +16,12 @@ import {
 export default function Storage() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [applying, setApplying] = useState(false)
   const [opening, setOpening] = useState<string | null>(null)
   const [config, setConfig] = useState<PathConfig | null>(null)
   const [noteDir, setNoteDir] = useState('')
   const [dataDir, setDataDir] = useState('')
+  const [vectorDir, setVectorDir] = useState('')
   const [ffmpegDir, setFfmpegDir] = useState('')
 
   const handleOpen = async (which: OpenFolderWhich) => {
@@ -35,13 +37,18 @@ export default function Storage() {
     }
   }
 
+  const applyConfigToForm = (data: PathConfig) => {
+    setConfig(data)
+    setNoteDir(data.note_output_dir || data.effective?.note_output_dir || '')
+    setDataDir(data.data_dir || data.effective?.data_dir || '')
+    setVectorDir(data.vector_db_dir || data.effective?.vector_db_dir || '')
+    setFfmpegDir(data.ffmpeg_bin_path || data.effective?.ffmpeg_bin_path || '')
+  }
+
   const load = useCallback(async () => {
     try {
       const data = await getPathConfig()
-      setConfig(data)
-      setNoteDir(data.note_output_dir || data.effective?.note_output_dir || '')
-      setDataDir(data.data_dir || data.effective?.data_dir || '')
-      setFfmpegDir(data.ffmpeg_bin_path || data.effective?.ffmpeg_bin_path || '')
+      applyConfigToForm(data)
     } catch {
       toast.error('获取路径配置失败')
     } finally {
@@ -59,18 +66,34 @@ export default function Storage() {
       const data = await updatePathConfig({
         note_output_dir: noteDir.trim(),
         data_dir: dataDir.trim(),
+        vector_db_dir: vectorDir.trim(),
         ffmpeg_bin_path: ffmpegDir.trim(),
       })
-      setConfig(data)
-      setNoteDir(data.note_output_dir || data.effective?.note_output_dir || '')
-      setDataDir(data.data_dir || data.effective?.data_dir || '')
-      setFfmpegDir(data.ffmpeg_bin_path || data.effective?.ffmpeg_bin_path || '')
+      applyConfigToForm(data)
       toast.success('路径已保存：新任务将使用新目录（旧文件不会自动迁移）')
     } catch (e: any) {
-      // 拦截器可能已 toast
       if (e?.msg) toast.error(e.msg)
     } finally {
       setSaving(false)
+    }
+  }
+
+  const handleRecommended = async () => {
+    const root = config?.suggested?.data_root || config?.effective?.user_data_root || ''
+    const ok = window.confirm(
+      `将把笔记/下载/向量库/日志切换到用户可写目录：\n${root}\n\n` +
+        '不会自动迁移旧文件。若数据仍在安装目录，请自行复制。\n\n继续？',
+    )
+    if (!ok) return
+    setApplying(true)
+    try {
+      const data = await updatePathConfig({ use_recommended: true })
+      applyConfigToForm(data)
+      toast.success('已应用推荐可写目录')
+    } catch (e: any) {
+      if (e?.msg) toast.error(e.msg)
+    } finally {
+      setApplying(false)
     }
   }
 
@@ -82,31 +105,76 @@ export default function Storage() {
     )
   }
 
+  const inProgramFiles = Boolean(config?.effective?.cwd_looks_like_program_files)
+
   return (
     <div className="space-y-6 p-6">
       <div>
         <h2 className="text-2xl font-semibold">数据与存储</h2>
         <p className="mt-1 text-sm text-neutral-500">
-          配置笔记缓存、下载目录与 FFmpeg 路径。优先于环境变量；建议使用绝对路径。
+          配置笔记、下载、向量库等路径。安装在 Program Files 时请使用用户可写目录，避免权限问题。
         </p>
       </div>
+
+      {inProgramFiles && (
+        <Alert variant="warning">
+          <Info className="h-4 w-4" />
+          <AlertDescription className="text-sm">
+            检测到后端工作目录位于 <strong>Program Files</strong>（
+            <code className="text-xs">{config?.effective?.cwd}</code>
+            ）。此处默认可能无写权限。建议点击下方「使用推荐可写目录」，或手动改到例如{' '}
+            <code className="text-xs">D:\BiliNoteData\...</code>。
+          </AlertDescription>
+        </Alert>
+      )}
 
       <Alert>
         <Info className="h-4 w-4" />
         <AlertDescription className="text-sm">
-          修改目录后<strong>不会自动迁移</strong>旧文件。若需保留历史笔记/缓存，请手动复制到新目录。
-          数据库路径暂不支持在此修改（改后需重启）。
+          修改目录后<strong>不会自动迁移</strong>旧文件。向量库用于 AI 问答索引；与笔记目录可分开配置。
+          不建议填 Program Files 路径（保存时会拒绝）。
         </AlertDescription>
       </Alert>
 
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-lg">
-            <HardDrive className="h-5 w-5" />
-            路径配置
+          <CardTitle className="flex flex-wrap items-center justify-between gap-2 text-lg">
+            <span className="flex items-center gap-2">
+              <HardDrive className="h-5 w-5" />
+              路径配置
+            </span>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={applying}
+              onClick={handleRecommended}
+            >
+              {applying ? (
+                <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Sparkles className="mr-1 h-3.5 w-3.5" />
+              )}
+              使用推荐可写目录
+            </Button>
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
+          {config?.suggested?.data_root && (
+            <p className="text-xs text-neutral-500">
+              推荐数据根：{' '}
+              <code className="rounded bg-neutral-100 px-1">{config.suggested.data_root}</code>
+              <Button
+                type="button"
+                variant="link"
+                className="h-auto px-1 text-xs"
+                onClick={() => handleOpen('user_data_root')}
+              >
+                打开
+              </Button>
+            </p>
+          )}
+
           <div className="space-y-2">
             <div className="flex items-center justify-between gap-2">
               <label className="text-sm font-medium">笔记与任务缓存目录</label>
@@ -124,10 +192,10 @@ export default function Storage() {
             <Input
               value={noteDir}
               onChange={e => setNoteDir(e.target.value)}
-              placeholder="例如 D:/BiliNoteData/note_results"
+              placeholder={config?.suggested?.note_output_dir || '例如 D:/BiliNoteData/note_results'}
             />
             <p className="text-xs text-neutral-400">
-              存放 status / 转写缓存 / 成功笔记 JSON。当前生效：
+              当前生效：
               <code className="ml-1 rounded bg-neutral-100 px-1">
                 {config?.effective?.note_output_dir}
               </code>
@@ -151,12 +219,41 @@ export default function Storage() {
             <Input
               value={dataDir}
               onChange={e => setDataDir(e.target.value)}
-              placeholder="例如 D:/BiliNoteData/data"
+              placeholder={config?.suggested?.data_dir || '例如 D:/BiliNoteData/data'}
             />
             <p className="text-xs text-neutral-400">
-              音视频下载缓存。当前生效：
+              当前生效：
               <code className="ml-1 rounded bg-neutral-100 px-1">
                 {config?.effective?.data_dir}
+              </code>
+            </p>
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <label className="text-sm font-medium">向量库目录（AI 问答）</label>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={opening === 'vector_db_dir'}
+                onClick={() => handleOpen('vector_db_dir')}
+              >
+                <FolderOpen className="mr-1 h-3.5 w-3.5" />
+                {opening === 'vector_db_dir' ? '打开中…' : '打开目录'}
+              </Button>
+            </div>
+            <Input
+              value={vectorDir}
+              onChange={e => setVectorDir(e.target.value)}
+              placeholder={
+                config?.suggested?.vector_db_dir || '例如 %LOCALAPPDATA%/BiliNote/vector_db'
+              }
+            />
+            <p className="text-xs text-neutral-400">
+              Chroma 索引存放处。当前生效：
+              <code className="ml-1 rounded bg-neutral-100 px-1">
+                {config?.effective?.vector_db_dir}
               </code>
             </p>
           </div>
@@ -169,7 +266,7 @@ export default function Storage() {
               placeholder="例如 D:/Program Files/FFmpeg/bin"
             />
             <p className="text-xs text-neutral-400">
-              填 bin 目录或 ffmpeg 可执行文件路径。当前生效：
+              当前生效：
               <code className="ml-1 rounded bg-neutral-100 px-1">
                 {config?.effective?.ffmpeg_bin_path || '（系统 PATH）'}
               </code>
@@ -201,7 +298,6 @@ export default function Storage() {
               <code className="ml-1 break-all rounded bg-neutral-100 px-1 text-xs">
                 {config?.effective?.logs_dir || '(logs)'}
               </code>
-              <span className="ml-2 text-xs text-neutral-400">app.log 在此</span>
             </div>
             <Button
               type="button"
@@ -211,7 +307,7 @@ export default function Storage() {
               onClick={() => handleOpen('logs_dir')}
             >
               <FolderOpen className="mr-1 h-3.5 w-3.5" />
-              {opening === 'logs_dir' ? '打开中…' : '打开日志目录'}
+              打开日志目录
             </Button>
           </div>
           <div className="flex flex-wrap items-center justify-between gap-2">
@@ -220,6 +316,9 @@ export default function Storage() {
               <code className="ml-1 break-all rounded bg-neutral-100 px-1 text-xs">
                 {config?.effective?.cwd}
               </code>
+              {inProgramFiles && (
+                <span className="ml-2 text-xs text-amber-600">（Program Files）</span>
+              )}
             </div>
             <Button
               type="button"
@@ -228,16 +327,21 @@ export default function Storage() {
               disabled={opening === 'cwd'}
               onClick={() => handleOpen('cwd')}
             >
-              <FolderOpen className="mr-1 h-3.5 w-3.5" />
               打开
             </Button>
+          </div>
+          <div>
+            <span className="font-medium">配置文件：</span>
+            <code className="ml-1 break-all rounded bg-neutral-100 px-1 text-xs">
+              {config?.config_file}
+            </code>
           </div>
           <div>
             <span className="font-medium">数据库：</span>
             <code className="ml-1 break-all rounded bg-neutral-100 px-1 text-xs">
               {config?.effective?.database_url}
             </code>
-            <span className="ml-2 text-xs text-neutral-400">（设置页暂不支持修改）</span>
+            <span className="ml-2 text-xs text-neutral-400">（暂不支持在此修改）</span>
           </div>
         </CardContent>
       </Card>

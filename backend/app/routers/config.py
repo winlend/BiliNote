@@ -119,13 +119,17 @@ def update_transcriber_config(data: TranscriberConfigRequest):
     return R.success(data=config)
 
 
-# ---- 数据与存储路径（笔记缓存 / 下载目录 / FFmpeg）----
+# ---- 数据与存储路径（笔记 / 下载 / 向量库 / 日志 / FFmpeg）----
 
 class PathConfigRequest(BaseModel):
     note_output_dir: Optional[str] = None
     data_dir: Optional[str] = None
     out_dir: Optional[str] = None
+    vector_db_dir: Optional[str] = None
+    logs_dir: Optional[str] = None
     ffmpeg_bin_path: Optional[str] = None
+    # 一键写入推荐可写布局（用户数据根），忽略其它字段
+    use_recommended: Optional[bool] = False
 
 
 @router.get("/path_config")
@@ -137,30 +141,42 @@ def get_path_config():
 @router.post("/path_config")
 def update_path_config(data: PathConfigRequest):
     from app.services.path_config_manager import get_path_config_manager
+    mgr = get_path_config_manager()
     try:
-        cfg = get_path_config_manager().update_config(
-            note_output_dir=data.note_output_dir,
-            data_dir=data.data_dir,
-            out_dir=data.out_dir,
-            ffmpeg_bin_path=data.ffmpeg_bin_path,
-        )
+        if data.use_recommended:
+            cfg = mgr.apply_recommended_layout()
+        else:
+            cfg = mgr.update_config(
+                note_output_dir=data.note_output_dir,
+                data_dir=data.data_dir,
+                out_dir=data.out_dir,
+                vector_db_dir=data.vector_db_dir,
+                logs_dir=data.logs_dir,
+                ffmpeg_bin_path=data.ffmpeg_bin_path,
+            )
     except ValueError as e:
         return R.error(msg=str(e))
-    # 若改了 FFmpeg 路径，强制下次健康检查重探
+    except Exception as e:
+        logger.error(f"更新路径配置失败: {e}", exc_info=True)
+        return R.error(msg=str(e))
     try:
         from ffmpeg_helper import check_ffmpeg_exists
-        # 同步环境变量，使当前进程立即生效
         if cfg.get("effective", {}).get("ffmpeg_bin_path"):
             os.environ["FFMPEG_BIN_PATH"] = cfg["effective"]["ffmpeg_bin_path"]
         check_ffmpeg_exists(force=True)
     except Exception as e:
         logger.warning(f"刷新 ffmpeg 探测失败: {e}")
-    return R.success(data=cfg, msg="路径已保存；新任务将使用新目录，旧文件不会自动迁移")
+    msg = (
+        "已切换为推荐可写目录（旧文件不会自动迁移，请手动复制）"
+        if data.use_recommended
+        else "路径已保存；新任务将使用新目录，旧文件不会自动迁移"
+    )
+    return R.success(data=cfg, msg=msg)
 
 
 class OpenFolderRequest(BaseModel):
-    """在资源管理器中打开本机目录（仅允许已知数据目录，防任意路径打开）。"""
-    which: str  # note_output_dir | data_dir | logs_dir | out_dir | cwd
+    """在资源管理器中打开本机目录（仅允许已知数据目录）。"""
+    which: str  # note_output_dir | data_dir | logs_dir | out_dir | vector_db_dir | user_data_root | cwd
 
 
 @router.post("/open_folder")
@@ -168,15 +184,16 @@ def open_folder(data: OpenFolderRequest):
     import subprocess
     import sys as _sys
 
-    from app.services.path_config_manager import get_path_config_manager
-    from app.utils.env_loader import get_logs_dir
+    from app.services.path_config_manager import get_path_config_manager, get_user_data_root
 
     mgr = get_path_config_manager()
     mapping = {
         "note_output_dir": mgr.get_note_output_dir(),
         "data_dir": mgr.get_data_dir(),
         "out_dir": mgr.get_out_dir(),
-        "logs_dir": get_logs_dir(),
+        "vector_db_dir": mgr.get_vector_db_dir(),
+        "logs_dir": mgr.get_logs_dir(),
+        "user_data_root": str(get_user_data_root()),
         "cwd": str(Path.cwd().resolve()),
     }
     target = mapping.get(data.which)

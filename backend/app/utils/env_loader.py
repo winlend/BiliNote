@@ -58,7 +58,16 @@ def load_app_dotenv(*, override: bool = False) -> Optional[str]:
 
 
 def get_logs_dir() -> str:
-    """日志目录（与 get_logger 的 logs/ 一致），返回绝对路径。"""
-    p = Path(os.getcwd()) / "logs"
-    p.mkdir(parents=True, exist_ok=True)
-    return str(p.resolve())
+    """日志目录：优先 PathConfigManager（可写用户目录），否则 CWD/logs。"""
+    try:
+        from app.services.path_config_manager import get_path_config_manager
+
+        return get_path_config_manager().get_logs_dir()
+    except Exception:
+        p = Path(os.getcwd()) / "logs"
+        try:
+            p.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            p = Path.home() / ".bilinote" / "logs"
+            p.mkdir(parents=True, exist_ok=True)
+        return str(p.resolve())

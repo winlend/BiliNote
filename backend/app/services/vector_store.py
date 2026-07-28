@@ -115,38 +115,27 @@ def _default_user_vector_dir() -> str:
 
 
 def _vector_db_dir() -> str:
-    """向量库目录：VECTOR_DB_DIR > 可写 CWD/vector_db > 用户目录。
-
-    安装在 Program Files 时 CWD 通常不可写，必须落到 LocalAppData。
-    """
-    raw = (os.getenv("VECTOR_DB_DIR") or "").strip()
-    candidates = []
-    if raw:
-        candidates.append(raw)
-    cwd_candidate = os.path.join(os.getcwd(), "vector_db")
-    # 避免优先选 Program Files 下的不可写路径
-    candidates.append(cwd_candidate)
-    candidates.append(_default_user_vector_dir())
-
-    last_err = None
-    for path in candidates:
-        try:
-            if _is_writable_dir(path):
-                if path != cwd_candidate and not raw:
-                    logger.info(f"向量库使用可写目录: {path}")
-                return os.path.abspath(path)
-        except Exception as e:
-            last_err = e
-            continue
-    # 最后一搏
-    fallback = _default_user_vector_dir()
+    """向量库目录：设置页 / VECTOR_DB_DIR / 可写默认（用户数据根）。"""
     try:
-        os.makedirs(fallback, exist_ok=True)
-        return os.path.abspath(fallback)
-    except Exception as e:
-        raise RuntimeError(
-            f"无法创建向量库目录（尝试过 {candidates}）。最后错误: {last_err or e}"
-        ) from e
+        from app.services.path_config_manager import get_path_config_manager
+
+        return get_path_config_manager().get_vector_db_dir()
+    except Exception:
+        raw = (os.getenv("VECTOR_DB_DIR") or "").strip()
+        if raw:
+            path = raw
+        else:
+            if sys.platform == "win32":
+                base = (
+                    os.environ.get("LOCALAPPDATA")
+                    or os.environ.get("APPDATA")
+                    or os.path.expanduser("~")
+                )
+                path = os.path.join(base, "BiliNote", "vector_db")
+            else:
+                path = os.path.join(os.path.expanduser("~"), ".bilinote", "vector_db")
+        os.makedirs(path, exist_ok=True)
+        return os.path.abspath(path)
 
 
 def _chunk_markdown(markdown: str) -> list[dict]:
