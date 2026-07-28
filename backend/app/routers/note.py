@@ -1,6 +1,7 @@
 # app/routers/note.py
 import json
 import os
+import re
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -260,6 +261,91 @@ def clear_task_cache(task_id: str):
     except Exception as e:
         logger.error(f"清空任务缓存失败 task_id={task_id}: {e}", exc_info=True)
         return R.error(msg=f"清空失败: {e}")
+
+
+class ExportMarkdownRequest(BaseModel):
+    task_id: Optional[str] = None
+    content: Optional[str] = None
+    title: Optional[str] = None
+
+
+def _safe_filename(name: str) -> str:
+    cleaned = re.sub(r'[\\/:*?"<>|]+', "_", (name or "").strip())
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" ._") or "note"
+    return cleaned[:80]
+
+
+@router.post("/export_markdown")
+def export_markdown(data: ExportMarkdownRequest):
+    """将 Markdown 写入笔记目录（桌面 WebView 常无法用 a[download] 落盘）。
+
+    优先用请求体 content；否则读 note_results/{task_id}.json 或 _markdown.md。
+    """
+    content = (data.content or "").strip()
+    title = (data.title or "").strip()
+    task_id = (data.task_id or "").strip() or None
+
+    out = _note_output_dir()
+    os.makedirs(out, exist_ok=True)
+
+    if not content and task_id:
+        if any(ch in task_id for ch in ("/", "\\", "..")):
+            return R.error(msg="非法 task_id")
+        md_path = os.path.join(out, f"{task_id}_markdown.md")
+        json_path = os.path.join(out, f"{task_id}.json")
+        if os.path.isfile(md_path):
+            with open(md_path, "r", encoding="utf-8") as f:
+                content = f.read().strip()
+        if not content and os.path.isfile(json_path):
+            with open(json_path, "r", encoding="utf-8") as f:
+                note = json.load(f)
+            md = note.get("markdown", "")
+            if isinstance(md, list):
+                parts = []
+                for item in md:
+                    if isinstance(item, dict):
+                        parts.append(item.get("content") or "")
+                    elif isinstance(item, str):
+                        parts.append(item)
+                content = "\n\n".join(p for p in parts if p).strip()
+            elif isinstance(md, str):
+                content = md.strip()
+            if not title:
+                meta = note.get("audio_meta") or {}
+                title = meta.get("title") or ""
+
+    if not content:
+        return R.error(
+            msg="没有可导出的 Markdown 内容。请确认笔记已生成成功，或先点「复制」检查正文。"
+        )
+
+    safe = _safe_filename(title or (task_id or "note"))
+    # 固定可预期文件名，便于用户在笔记目录找到
+    if task_id and not any(ch in task_id for ch in ("/", "\\", "..")):
+        filename = f"{safe}_{task_id[:8]}.md"
+    else:
+        filename = f"{safe}.md"
+    path = os.path.join(out, filename)
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
+            if not content.endswith("\n"):
+                f.write("\n")
+    except Exception as e:
+        logger.error(f"导出 Markdown 写文件失败: {e}", exc_info=True)
+        return R.error(msg=f"写入失败: {e}")
+
+    abs_path = str(Path(path).resolve())
+    logger.info(f"已导出 Markdown: {abs_path}")
+    return R.success(
+        data={
+            "path": abs_path,
+            "filename": filename,
+            "dir": str(Path(out).resolve()),
+            "bytes": len(content.encode("utf-8")),
+        },
+        msg="已保存到笔记目录",
+    )
 
 
 @router.get("/task_status/{task_id}")

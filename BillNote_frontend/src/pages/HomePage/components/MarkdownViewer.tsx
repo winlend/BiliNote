@@ -492,36 +492,73 @@ const MarkdownViewer: FC<MarkdownViewerProps> = memo(({ status }) => {
       URL.revokeObjectURL(url)
     },
   }
-  const handleDownload = () => {
-    try {
-      // 优先用当前选中内容；多版本/空 state 时回退到任务里的 markdown
-      let content = (selectedContent || '').trim()
-      if (!content && currentTask) {
-        const md = currentTask.markdown
-        if (typeof md === 'string') content = md.trim()
-        else if (Array.isArray(md) && md.length) {
-          const latest = [...md].sort(
-            (a, b) =>
-              new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime()
-          )[0]
-          content = (latest?.content || '').trim()
-        }
+  const resolveExportContent = (): string => {
+    let content = (selectedContent || '').trim()
+    if (!content && currentTask) {
+      const md = currentTask.markdown as unknown
+      if (typeof md === 'string') content = md.trim()
+      else if (Array.isArray(md) && md.length) {
+        const latest = [...md].sort(
+          (a: any, b: any) =>
+            new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime()
+        )[0]
+        content = String(latest?.content || '').trim()
       }
-      if (!content) {
-        toast.error('当前没有可导出的 Markdown 内容')
-        return
-      }
+    }
+    return content
+  }
 
+  const handleDownload = async () => {
+    // 立刻反馈，避免 WebView 静默无响应被当成「没点到」
+    toast.loading('正在导出 Markdown…', { id: 'export-md' })
+    try {
+      const content = resolveExportContent()
       const rawTitle =
         currentTask?.audioMeta?.title ||
         getCurrentTask()?.audioMeta?.title ||
         'note'
-      const safeName = String(rawTitle)
-        .replace(/[\\/:*?"<>|]+/g, '_')
-        .replace(/\s+/g, ' ')
-        .trim()
-        .slice(0, 80) || 'note'
+      const taskId = currentTask?.id || getCurrentTask()?.id
 
+      // 1) 后端落盘：桌面 Tauri 最可靠
+      try {
+        const { exportMarkdownFile } = await import('@/services/note')
+        const { openFolder } = await import('@/services/paths')
+        const res = await exportMarkdownFile({
+          task_id: taskId,
+          content: content || undefined,
+          title: String(rawTitle),
+        })
+        toast.success(`已保存：${res.filename}\n目录：${res.dir}`, {
+          id: 'export-md',
+          duration: 5000,
+        })
+        // 尽量打开笔记目录，方便用户直接看到文件
+        try {
+          await openFolder('note_output_dir')
+        } catch {
+          /* 打开目录失败不阻断 */
+        }
+        return
+      } catch (backendErr: any) {
+        console.warn('后端导出失败，尝试浏览器下载/复制', backendErr)
+        // 若后端明确说没有内容，直接提示
+        if (!content) {
+          toast.error(
+            backendErr?.msg ||
+              '当前没有可导出的 Markdown。可先点「复制」确认正文，或到「数据与存储」打开笔记目录查看文件。',
+            { id: 'export-md', duration: 5000 }
+          )
+          return
+        }
+      }
+
+      // 2) 浏览器 a[download] 兜底（纯 Web 可用；Tauri 常无效）
+      const safeName =
+        String(rawTitle)
+          .replace(/[\\/:*?"<>|]+/g, '_')
+          .replace(/\s+/g, ' ')
+          .trim()
+          .slice(0, 80) || 'note'
       const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' })
       const url = URL.createObjectURL(blob)
       const link = document.createElement('a')
@@ -530,7 +567,6 @@ const MarkdownViewer: FC<MarkdownViewerProps> = memo(({ status }) => {
       link.rel = 'noopener'
       document.body.appendChild(link)
       link.click()
-      // 延迟 revoke，避免部分 WebView 还没开始下载就失效
       setTimeout(() => {
         try {
           document.body.removeChild(link)
@@ -538,11 +574,24 @@ const MarkdownViewer: FC<MarkdownViewerProps> = memo(({ status }) => {
           /* ignore */
         }
         URL.revokeObjectURL(url)
-      }, 1000)
-      toast.success('已开始下载 Markdown')
+      }, 1500)
+
+      // 3) 同时写入剪贴板，保证桌面端至少有一条成功路径
+      try {
+        await navigator.clipboard.writeText(content)
+        toast.success(
+          '已尝试下载，并复制全文到剪贴板（桌面端若未出现文件，请粘贴到记事本保存为 .md）',
+          { id: 'export-md', duration: 6000 }
+        )
+      } catch {
+        toast.success('已尝试触发下载；若未看到文件，请用「复制」后自行保存', {
+          id: 'export-md',
+          duration: 5000,
+        })
+      }
     } catch (e) {
       console.error('导出 Markdown 失败', e)
-      toast.error('导出失败，请尝试「复制」后自行保存')
+      toast.error('导出失败，请使用「复制」后自行保存为 .md 文件', { id: 'export-md' })
     }
   }
 

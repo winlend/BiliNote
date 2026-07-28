@@ -74,3 +74,19 @@ export const get_task_status = async (task_id: string) => {
 export const clearTaskCache = async (task_id: string) => {
   return await request.post(`/task_cache/clear/${task_id}`)
 }
+
+export interface ExportMarkdownResult {
+  path: string
+  filename: string
+  dir: string
+  bytes: number
+}
+
+/** 后端落盘导出（解决 Tauri/WebView 下 a[download] 无反应） */
+export const exportMarkdownFile = async (data: {
+  task_id?: string
+  content?: string
+  title?: string
+}): Promise<ExportMarkdownResult> => {
+  return await request.post('/export_markdown', data)
+}
