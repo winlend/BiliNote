@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { Copy, Download, BrainCircuit, MessageSquare } from 'lucide-react'
+import { Copy, FileDown, BrainCircuit, MessageSquare } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger } from '@/components/ui/select'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
@@ -162,11 +162,11 @@ export function MarkdownHeader({
           <Tooltip>
             <TooltipTrigger asChild>
               <Button onClick={onDownload} variant="ghost" size="sm" className="h-8 px-2">
-                <Download className="mr-1.5 h-4 w-4" />
+                <FileDown className="mr-1.5 h-4 w-4" />
                 <span className="text-sm">导出 Markdown</span>
               </Button>
             </TooltipTrigger>
-            <TooltipContent>下载为 Markdown 文件</TooltipContent>
+            <TooltipContent>下载为 .md 文件</TooltipContent>
           </Tooltip>
         </TooltipProvider>
         <TooltipProvider>

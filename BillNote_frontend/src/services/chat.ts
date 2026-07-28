@@ -23,10 +23,18 @@ export type IndexStatus = 'idle' | 'indexing' | 'indexed' | 'failed'
 export interface ChatStatusResponse {
   indexed: boolean
   status: IndexStatus
+  /** 索引失败时的后端原因 */
+  error?: string
 }
 
-export const indexTask = async (taskId: string): Promise<void> => {
-  return await request.post('/chat/index', { task_id: taskId })
+export const indexTask = async (
+  taskId: string,
+  options?: { force?: boolean }
+): Promise<void> => {
+  return await request.post('/chat/index', {
+    task_id: taskId,
+    force: Boolean(options?.force),
+  })
 }
 
 export const askQuestion = async (data: {

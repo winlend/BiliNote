@@ -52,6 +52,8 @@ export default function ChatPanel({ taskId, mode, onModeChange }: ChatPanelProps
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [indexStatus, setIndexStatus] = useState<IndexStatus | null>(null)
+  const [indexError, setIndexError] = useState('')
+  const [pollTick, setPollTick] = useState(0)
 
   const messages = useChatStore(state => state.chatHistory[taskId]) ?? []
   const addMessage = useChatStore(state => state.addMessage)
@@ -64,7 +66,7 @@ export default function ChatPanel({ taskId, mode, onModeChange }: ChatPanelProps
     [tasks, currentTaskId],
   )
 
-  // 检查索引状态，未索引时自动触发，indexing 时轮询
+  // 检查索引状态；未索引自动触发；indexing 轮询；failed 时展示原因
   useEffect(() => {
     if (!taskId) return
     let cancelled = false
@@ -75,19 +77,36 @@ export default function ChatPanel({ taskId, mode, onModeChange }: ChatPanelProps
         const res = await getChatStatus(taskId)
         if (cancelled) return
         setIndexStatus(res.status)
-
-        if (res.status === 'idle') {
-          // 未索引，触发后台索引
-          await indexTask(taskId)
-          if (!cancelled) setIndexStatus('indexing')
+        if (res.status === 'failed' && res.error) {
+          setIndexError(res.error)
+        } else if (res.status === 'indexed') {
+          setIndexError('')
         }
 
-        // indexing 状态持续轮询
+        if (res.status === 'idle') {
+          try {
+            await indexTask(taskId)
+            if (!cancelled) {
+              setIndexStatus('indexing')
+              setIndexError('')
+            }
+          } catch (e: any) {
+            if (!cancelled) {
+              setIndexStatus('failed')
+              setIndexError(e?.msg || e?.message || '索引请求失败')
+            }
+            return
+          }
+        }
+
         if (res.status === 'indexing' || res.status === 'idle') {
           timer = setTimeout(poll, 2000)
         }
-      } catch {
-        if (!cancelled) setIndexStatus('failed')
+      } catch (e: any) {
+        if (!cancelled) {
+          setIndexStatus('failed')
+          setIndexError(e?.msg || e?.message || '查询索引状态失败')
+        }
       }
     }
 
@@ -96,7 +115,21 @@ export default function ChatPanel({ taskId, mode, onModeChange }: ChatPanelProps
       cancelled = true
       if (timer) clearTimeout(timer)
     }
-  }, [taskId])
+  }, [taskId, pollTick])
+
+  const handleReindex = async () => {
+    setIndexStatus('indexing')
+    setIndexError('')
+    try {
+      await indexTask(taskId, { force: true })
+      // 触发 useEffect 重新轮询
+      setPollTick(t => t + 1)
+    } catch (e: any) {
+      toast.error(e?.msg || '索引请求失败')
+      setIndexStatus('failed')
+      setIndexError(e?.msg || e?.message || '索引请求失败')
+    }
+  }
 
   const handleSend = useCallback(
     async (value: string) => {
@@ -198,9 +231,11 @@ export default function ChatPanel({ taskId, mode, onModeChange }: ChatPanelProps
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 text-neutral-400">
         <Loader2 className="h-6 w-6 animate-spin" />
-        <div className="text-center">
+        <div className="text-center px-4">
           <p className="text-sm font-medium">正在索引笔记内容...</p>
-          <p className="mt-1 text-xs">首次使用需下载 Embedding 模型（约 80MB），请耐心等待</p>
+          <p className="mt-1 text-xs">
+            首次使用可能需下载 Embedding 模型（约 80MB），请保持联网并耐心等待
+          </p>
         </div>
       </div>
     )
@@ -208,21 +243,14 @@ export default function ChatPanel({ taskId, mode, onModeChange }: ChatPanelProps
 
   if (indexStatus === 'failed') {
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-2 text-neutral-400">
-        <span className="text-sm">索引失败，请重试</span>
-        <Button
-          size="sm"
-          variant="outline"
-          onClick={async () => {
-            setIndexStatus('indexing')
-            try {
-              await indexTask(taskId)
-            } catch {
-              toast.error('索引请求失败')
-              setIndexStatus('failed')
-            }
-          }}
-        >
+      <div className="flex h-full flex-col items-center justify-center gap-3 px-4 text-neutral-500">
+        <span className="text-sm font-medium text-red-500">索引失败</span>
+        {indexError ? (
+          <p className="max-w-sm break-words text-center text-xs text-red-400/90">{indexError}</p>
+        ) : (
+          <p className="text-xs text-neutral-400">请重试；仍失败请查看后端 logs/app.log</p>
+        )}
+        <Button size="sm" variant="outline" onClick={handleReindex}>
           重新索引
         </Button>
       </div>

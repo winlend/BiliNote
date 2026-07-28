@@ -493,15 +493,57 @@ const MarkdownViewer: FC<MarkdownViewerProps> = memo(({ status }) => {
     },
   }
   const handleDownload = () => {
-    const task = getCurrentTask()
-    const name = task?.audioMeta.title || 'note'
-    const blob = new Blob([selectedContent], { type: 'text/markdown;charset=utf-8' })
-    const link = document.createElement('a')
-    link.href = URL.createObjectURL(blob)
-    link.download = `${name}.md`
-    document.body.appendChild(link)
-    link.click()
-    document.body.removeChild(link)
+    try {
+      // 优先用当前选中内容；多版本/空 state 时回退到任务里的 markdown
+      let content = (selectedContent || '').trim()
+      if (!content && currentTask) {
+        const md = currentTask.markdown
+        if (typeof md === 'string') content = md.trim()
+        else if (Array.isArray(md) && md.length) {
+          const latest = [...md].sort(
+            (a, b) =>
+              new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime()
+          )[0]
+          content = (latest?.content || '').trim()
+        }
+      }
+      if (!content) {
+        toast.error('当前没有可导出的 Markdown 内容')
+        return
+      }
+
+      const rawTitle =
+        currentTask?.audioMeta?.title ||
+        getCurrentTask()?.audioMeta?.title ||
+        'note'
+      const safeName = String(rawTitle)
+        .replace(/[\\/:*?"<>|]+/g, '_')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 80) || 'note'
+
+      const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `${safeName}.md`
+      link.rel = 'noopener'
+      document.body.appendChild(link)
+      link.click()
+      // 延迟 revoke，避免部分 WebView 还没开始下载就失效
+      setTimeout(() => {
+        try {
+          document.body.removeChild(link)
+        } catch {
+          /* ignore */
+        }
+        URL.revokeObjectURL(url)
+      }, 1000)
+      toast.success('已开始下载 Markdown')
+    } catch (e) {
+      console.error('导出 Markdown 失败', e)
+      toast.error('导出失败，请尝试「复制」后自行保存')
+    }
   }
 
   if (status === 'loading') {

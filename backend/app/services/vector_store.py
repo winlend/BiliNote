@@ -22,6 +22,17 @@ def _note_output_dir() -> str:
         return os.getenv("NOTE_OUTPUT_DIR", "note_results")
 
 
+def _vector_db_dir() -> str:
+    """向量库目录：环境变量 VECTOR_DB_DIR，否则放在 CWD/vector_db。"""
+    raw = (os.getenv("VECTOR_DB_DIR") or "").strip()
+    if raw:
+        path = raw
+    else:
+        path = os.path.join(os.getcwd(), "vector_db")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
 def _chunk_markdown(markdown: str) -> list[dict]:
     """按 H2/H3 标题拆分 markdown 为语义块。"""
     sections = re.split(r'(?=^#{2,3}\s)', markdown, flags=re.MULTILINE)
@@ -113,31 +124,53 @@ class VectorStoreManager:
     """基于 ChromaDB 的笔记向量存储管理器。"""
 
     def __init__(self):
-        os.makedirs(VECTOR_DB_DIR, exist_ok=True)
-        self._client = chromadb.PersistentClient(
-            path=VECTOR_DB_DIR,
-            settings=Settings(anonymized_telemetry=False),
-        )
+        db_path = _vector_db_dir()
+        os.makedirs(db_path, exist_ok=True)
+        self._db_path = db_path
+        try:
+            self._client = chromadb.PersistentClient(
+                path=db_path,
+                settings=Settings(anonymized_telemetry=False),
+            )
+        except Exception as e:
+            logger.error(f"初始化 ChromaDB 失败 path={db_path}: {e}", exc_info=True)
+            raise RuntimeError(
+                f"向量数据库初始化失败（{db_path}）。请确认已安装 chromadb，"
+                f"且目录可写。详情: {e}"
+            ) from e
 
     def _collection_name(self, task_id: str) -> str:
         """ChromaDB collection 名称：直接使用 task_id（UUID 格式合法）。"""
         return task_id
 
-    def index_task(self, task_id: str) -> None:
-        """读取笔记结果并建立向量索引。"""
+    def index_task(self, task_id: str) -> int:
+        """读取笔记结果并建立向量索引。成功返回 chunk 数；失败抛异常。"""
         result_path = os.path.join(_note_output_dir(), f"{task_id}.json")
         if not os.path.exists(result_path):
-            logger.warning(f"笔记文件不存在，跳过索引: {result_path}")
-            return
+            raise FileNotFoundError(
+                f"笔记文件不存在，无法索引: {result_path}。"
+                f"请确认任务已成功生成；若改过「笔记目录」，需用新目录下的任务。"
+            )
 
         with open(result_path, "r", encoding="utf-8") as f:
             note_data = json.load(f)
 
-        markdown = note_data.get("markdown", "")
-        transcript = note_data.get("transcript", {})
-        segments = transcript.get("segments", [])
+        markdown = note_data.get("markdown", "") or ""
+        # 多版本 markdown 可能是 list
+        if isinstance(markdown, list):
+            parts = []
+            for item in markdown:
+                if isinstance(item, dict):
+                    parts.append(item.get("content") or "")
+                elif isinstance(item, str):
+                    parts.append(item)
+            markdown = "\n\n".join(p for p in parts if p)
+        transcript = note_data.get("transcript", {}) or {}
+        if not isinstance(transcript, dict):
+            transcript = {}
+        segments = transcript.get("segments", []) or []
 
-        audio_meta = note_data.get("audio_meta", {})
+        audio_meta = note_data.get("audio_meta", {}) or {}
 
         meta_chunks = _build_meta_chunk(audio_meta)
         md_chunks = _chunk_markdown(markdown)
@@ -145,8 +178,10 @@ class VectorStoreManager:
         all_chunks = meta_chunks + md_chunks + tr_chunks
 
         if not all_chunks:
-            logger.warning(f"笔记内容为空，跳过索引: {task_id}")
-            return
+            raise ValueError(
+                f"笔记内容过短或为空，无法建立索引: {task_id}。"
+                f"请确认 markdown/转写至少有一段可用文本。"
+            )
 
         col_name = self._collection_name(task_id)
 
@@ -156,17 +191,34 @@ class VectorStoreManager:
         except Exception:
             pass
 
-        collection = self._client.create_collection(
-            name=col_name,
-            metadata={"hnsw:space": "cosine"},
+        try:
+            collection = self._client.create_collection(
+                name=col_name,
+                metadata={"hnsw:space": "cosine"},
+            )
+
+            documents = [c["text"] for c in all_chunks]
+            metadatas = [c["metadata"] for c in all_chunks]
+            ids = [f"{task_id}_{i}" for i in range(len(all_chunks))]
+
+            # 默认会拉 all-MiniLM 等 embedding；首次需联网，失败时给出明确错误
+            collection.add(documents=documents, metadatas=metadatas, ids=ids)
+        except Exception as e:
+            logger.error(f"写入向量索引失败 task_id={task_id}: {e}", exc_info=True)
+            # 尽量清掉半成品 collection
+            try:
+                self._client.delete_collection(col_name)
+            except Exception:
+                pass
+            raise RuntimeError(
+                f"建立向量索引失败: {e}。"
+                f"常见原因：首次需下载 Embedding 模型（需联网）、chromadb 损坏、磁盘满。"
+            ) from e
+
+        logger.info(
+            f"向量索引完成: task_id={task_id}, chunks={len(all_chunks)}, db={self._db_path}"
         )
-
-        documents = [c["text"] for c in all_chunks]
-        metadatas = [c["metadata"] for c in all_chunks]
-        ids = [f"{task_id}_{i}" for i in range(len(all_chunks))]
-
-        collection.add(documents=documents, metadatas=metadatas, ids=ids)
-        logger.info(f"向量索引完成: task_id={task_id}, chunks={len(all_chunks)}")
+        return len(all_chunks)
 
     def _parse_results(self, results: dict) -> list[dict]:
         """将 ChromaDB query 结果转换为 chunk 列表。"""
