@@ -14,7 +14,7 @@ from app.db.video_task_dao import get_task_by_video
 from app.enmus.exception import NoteErrorEnum
 from app.enmus.note_enums import DownloadQuality
 from app.exceptions.note import NoteError
-from app.services.note import NoteGenerator, logger
+from app.services.note import NoteGenerator, logger, clear_task_pipeline_cache, _cache_flags
 from app.services.task_serial_executor import task_serial_executor
 from app.utils.response import ResponseWrapper as R
 from app.utils.url_parser import extract_video_id
@@ -245,6 +245,22 @@ def generate_note(data: VideoRequest, background_tasks: BackgroundTasks):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/task_cache/clear/{task_id}")
+def clear_task_cache(task_id: str):
+    """清空任务管线缓存，供前端「清空后重跑」。
+
+    删除 audio/transcript/markdown/status/gpt checkpoint，不删最终 {task_id}.json 与媒体文件。
+    """
+    try:
+        result = clear_task_pipeline_cache(task_id)
+        return R.success(data=result, msg="已清空管线缓存，可重新生成")
+    except ValueError as e:
+        return R.error(msg=str(e))
+    except Exception as e:
+        logger.error(f"清空任务缓存失败 task_id={task_id}: {e}", exc_info=True)
+        return R.error(msg=f"清空失败: {e}")
+
+
 @router.get("/task_status/{task_id}")
 def get_task_status(task_id: str):
     out = _note_output_dir()
@@ -252,13 +268,22 @@ def get_task_status(task_id: str):
     result_path = os.path.join(out, f"{task_id}.json")
 
     def _extras(status_content: dict) -> dict:
+        cache = status_content.get("cache")
+        if not isinstance(cache, dict):
+            try:
+                cache = _cache_flags(task_id)
+            except Exception:
+                cache = {
+                    "audio": os.path.exists(os.path.join(out, f"{task_id}_audio.json")),
+                    "transcript": os.path.exists(os.path.join(out, f"{task_id}_transcript.json")),
+                    "markdown": os.path.exists(os.path.join(out, f"{task_id}_markdown.md")),
+                    "gpt_checkpoint": os.path.exists(
+                        os.path.join(out, f"{task_id}.gpt.checkpoint.json")
+                    ),
+                }
         return {
             "failed_at": status_content.get("failed_at"),
-            "cache": status_content.get("cache") or {
-                "audio": os.path.exists(os.path.join(out, f"{task_id}_audio.json")),
-                "transcript": os.path.exists(os.path.join(out, f"{task_id}_transcript.json")),
-                "markdown": os.path.exists(os.path.join(out, f"{task_id}_markdown.md")),
-            },
+            "cache": cache,
             "phase": status_content.get("phase") or status_content.get("status"),
         }
 

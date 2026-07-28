@@ -79,14 +79,42 @@ function formatElapsed(seconds: number): string {
   return `${m}m ${s.toString().padStart(2, '0')}s`
 }
 
-function cacheResumeHint(cache?: { audio?: boolean; transcript?: boolean; markdown?: boolean }) {
-  if (!cache) return '将尽量复用服务端已有缓存（若有）'
-  const parts: string[] = []
-  if (cache.audio) parts.push('下载')
-  if (cache.transcript) parts.push('转写')
-  if (cache.markdown) parts.push('笔记草稿')
-  if (!parts.length) return '未发现可复用缓存，将从头执行'
-  return `已有缓存可复用：${parts.join('、')}；重试时会跳过这些步骤`
+function cacheResumeHint(cache?: {
+  audio?: boolean
+  transcript?: boolean
+  markdown?: boolean
+  gpt_checkpoint?: boolean
+}) {
+  if (!cache) {
+    return {
+      summary: '将尽量复用服务端已有缓存（若有）',
+      detail:
+        '「继续」会跳过已成功落盘的步骤；「清空后重跑」会删除转写/笔记草稿与 AI 断点后再生成。',
+      hasAny: false,
+    }
+  }
+  const kept: string[] = []
+  if (cache.audio) kept.push('下载元信息')
+  if (cache.transcript) kept.push('转写/字幕')
+  if (cache.markdown) kept.push('笔记草稿')
+  if (cache.gpt_checkpoint) kept.push('AI 分块断点')
+  if (!kept.length) {
+    return {
+      summary: '未发现可复用缓存，两种重试都会从头执行',
+      detail: '下载、转写、总结都将重新跑一遍。',
+      hasAny: false,
+    }
+  }
+  return {
+    summary: `可复用：${kept.join('、')}`,
+    detail:
+      '点「继续」将跳过上述步骤，只重做失败及之后的环节。' +
+      (cache.markdown
+        ? ' 注意：若已有笔记草稿，继续可能直接复用旧草稿（换模型请用「清空后重跑」）。'
+        : '') +
+      ' 点「清空后重跑」会删除这些缓存与 GPT 断点后再生成（不删已下载的音视频文件）。',
+    hasAny: true,
+  }
 }
 
 const remarkPlugins = [gfm, remarkMath]
@@ -375,6 +403,7 @@ const MarkdownViewer: FC<MarkdownViewerProps> = memo(({ status }) => {
   const [viewMode, setViewMode] = useState<'map' | 'preview'>('preview')
   const svgRef = useRef<SVGSVGElement>(null)
   const [elapsedSec, setElapsedSec] = useState(0)
+  const [retrying, setRetrying] = useState<'continue' | 'clear' | null>(null)
   const stepStartedAt = useRef<number>(Date.now())
   const lastStepRef = useRef<string>(taskStatus)
 
@@ -535,6 +564,23 @@ const MarkdownViewer: FC<MarkdownViewerProps> = memo(({ status }) => {
     const failedLabel = STEP_LABEL[failedStepKey] || failedStepKey
     const guides = getErrorGuides(reason, failedStepKey)
 
+    const handleRetry = async (clearCache: boolean) => {
+      if (!currentTask) return
+      if (clearCache) {
+        const ok = window.confirm(
+          '确定清空该任务的下载元信息/转写/笔记草稿/AI 断点并从头重跑？\n' +
+            '不会删除 DATA 目录里的音视频文件，也不会删除历史成功笔记 JSON。',
+        )
+        if (!ok) return
+      }
+      setRetrying(clearCache ? 'clear' : 'continue')
+      try {
+        await retryTask(currentTask.id, undefined, { clearCache })
+      } finally {
+        setRetrying(null)
+      }
+    }
+
     return (
       <div className="flex h-screen w-full flex-col items-center justify-center gap-4 px-6">
         <div className="w-full max-w-2xl">
@@ -553,7 +599,10 @@ const MarkdownViewer: FC<MarkdownViewerProps> = memo(({ status }) => {
           <div className="mt-3 rounded-md border border-red-100 bg-red-50 px-4 py-3 text-left text-sm text-red-700 break-words">
             {reason}
           </div>
-          <p className="mt-3 text-xs text-neutral-500">{resume}</p>
+          <div className="mt-3 rounded-md border border-amber-100 bg-amber-50 px-3 py-2 text-left text-xs text-amber-900">
+            <p className="font-medium">{resume.summary}</p>
+            <p className="mt-1 text-amber-800/90">{resume.detail}</p>
+          </div>
           {guides.length > 0 && (
             <div className="mt-4 rounded-md border border-neutral-200 bg-neutral-50 px-3 py-3 text-left">
               <p className="mb-2 text-xs font-medium text-neutral-700">建议处理</p>
@@ -580,12 +629,25 @@ const MarkdownViewer: FC<MarkdownViewerProps> = memo(({ status }) => {
             </div>
           )}
           <div className="mt-4 flex flex-wrap items-center justify-center gap-3">
-            <Button onClick={() => currentTask && retryTask(currentTask.id)} size="lg">
-              重试
+            <Button
+              onClick={() => handleRetry(false)}
+              size="lg"
+              disabled={!!retrying}
+            >
+              {retrying === 'continue' ? '提交中…' : '继续（复用缓存）'}
+            </Button>
+            <Button
+              variant="destructive"
+              size="lg"
+              disabled={!!retrying}
+              onClick={() => handleRetry(true)}
+            >
+              {retrying === 'clear' ? '清空中…' : '清空后重跑'}
             </Button>
             <Button
               variant="outline"
               size="lg"
+              disabled={!!retrying}
               onClick={async () => {
                 try {
                   await navigator.clipboard.writeText(reason)

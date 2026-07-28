@@ -83,12 +83,55 @@ def get_download_output_dir() -> str:
 
 def _cache_flags(task_id: Optional[str]) -> dict:
     if not task_id:
-        return {"audio": False, "transcript": False, "markdown": False}
+        return {"audio": False, "transcript": False, "markdown": False, "gpt_checkpoint": False}
     out = get_note_output_dir()
     return {
         "audio": (out / f"{task_id}_audio.json").exists(),
         "transcript": (out / f"{task_id}_transcript.json").exists(),
         "markdown": (out / f"{task_id}_markdown.md").exists(),
+        "gpt_checkpoint": (out / f"{task_id}.gpt.checkpoint.json").exists(),
+    }
+
+
+def clear_task_pipeline_cache(task_id: str) -> dict:
+    """清空指定任务的管线缓存，供「清空后重跑」使用。
+
+    删除 note_results 下与 task_id 相关的中间产物与 GPT checkpoint，
+    不删除最终成功文件 {task_id}.json（若存在），也不删除 DATA_DIR 媒体文件。
+    """
+    if not task_id or any(ch in task_id for ch in ("/", "\\", "..")):
+        raise ValueError("非法 task_id")
+    out = get_note_output_dir()
+    names = [
+        f"{task_id}_audio.json",
+        f"{task_id}_transcript.json",
+        f"{task_id}_markdown.md",
+        f"{task_id}.status.json",
+        f"{task_id}.gpt.checkpoint.json",
+        f"{task_id}.status.tmp",
+    ]
+    deleted: list[str] = []
+    for name in names:
+        path = out / name
+        if path.is_file():
+            try:
+                path.unlink()
+                deleted.append(name)
+            except OSError as e:
+                logger.warning(f"删除缓存失败 {path}: {e}")
+    # 兼容 checkpoint 文件名被 sanitize 的情况（uuid 一般不变）
+    for path in out.glob(f"{task_id}*.gpt.checkpoint.json"):
+        try:
+            if path.is_file():
+                path.unlink()
+                deleted.append(path.name)
+        except OSError:
+            pass
+    logger.info(f"已清空任务管线缓存 task_id={task_id}, deleted={deleted}")
+    return {
+        "task_id": task_id,
+        "deleted": sorted(set(deleted)),
+        "cache": _cache_flags(task_id),
     }
 
 
@@ -728,6 +771,13 @@ class NoteGenerator:
             message="AI 正在总结内容生成笔记，长文可能需要较长时间…",
         )
 
+        def _on_gpt_progress(**kwargs):
+            message = kwargs.get("message") or "AI 总结中…"
+            try:
+                self._update_status(task_id, TaskStatus.SUMMARIZING, message=message)
+            except Exception as e:
+                logger.debug(f"写入 GPT 进度失败（忽略）: {e}")
+
         source = GPTSource(
             title=audio_meta.title,
             segment=transcript.segments,
@@ -739,6 +789,7 @@ class NoteGenerator:
             style=style,
             extras=extras,
             checkpoint_key=task_id,
+            progress_callback=_on_gpt_progress,
         )
 
         try:

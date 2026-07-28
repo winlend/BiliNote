@@ -153,6 +153,17 @@ class UniversalGPT(GPT):
         self._checkpoint_path(checkpoint_key).unlink(missing_ok=True)
 
     @staticmethod
+    def _emit_progress(source: GPTSource, *, phase: str, current: int, total: int, message: str) -> None:
+        """向 NoteGenerator 等上报分块进度；回调异常不得打断总结。"""
+        cb = getattr(source, "progress_callback", None)
+        if not cb:
+            return
+        try:
+            cb(phase=phase, current=current, total=total, message=message)
+        except Exception as exc:
+            print(f"[universal_gpt] progress_callback 忽略异常: {exc}")
+
+    @staticmethod
     def _is_insufficient_quota_error(exc: Exception) -> bool:
         raw = str(exc)
         return (
@@ -308,7 +319,30 @@ class UniversalGPT(GPT):
         if len(partials) > len(chunks):
             partials = []
 
+        total_chunks = max(len(chunks), 1)
+        # 从 checkpoint 续跑时，先告知已完成段数
+        if partials and total_chunks > 1:
+            self._emit_progress(
+                source,
+                phase="summarize",
+                current=len(partials),
+                total=total_chunks,
+                message=f"从断点续跑：已有 {len(partials)}/{total_chunks} 段，继续总结…",
+            )
+
         for chunk in chunks[len(partials):]:
+            idx = len(partials) + 1
+            if total_chunks > 1:
+                msg = f"AI 总结中（第 {idx}/{total_chunks} 段）…"
+            else:
+                msg = "AI 正在总结内容生成笔记…"
+            self._emit_progress(
+                source,
+                phase="summarize",
+                current=idx,
+                total=total_chunks,
+                message=msg,
+            )
             messages = self.create_messages(
                 chunk.segments,
                 title=source.title,
@@ -333,7 +367,22 @@ class UniversalGPT(GPT):
             if checkpoint_key:
                 self._clear_checkpoint(checkpoint_key)
             return partials[0]
+
+        self._emit_progress(
+            source,
+            phase="merge",
+            current=total_chunks,
+            total=total_chunks,
+            message=f"正在合并 {len(partials)} 段笔记草稿…",
+        )
         merged = self._merge_partials(partials, checkpoint_key, source_signature)
         if checkpoint_key:
             self._clear_checkpoint(checkpoint_key)
+        self._emit_progress(
+            source,
+            phase="done",
+            current=total_chunks,
+            total=total_chunks,
+            message="AI 总结完成，准备保存…",
+        )
         return merged

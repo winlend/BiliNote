@@ -69,3 +69,8 @@ export const get_task_status = async (task_id: string) => {
     throw e
   }
 }
+
+/** 清空任务管线缓存（audio/transcript/markdown/gpt checkpoint），不清媒体文件 */
+export const clearTaskCache = async (task_id: string) => {
+  return await request.post(`/task_cache/clear/${task_id}`)
+}

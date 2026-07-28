@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
-import { delete_task, generateNote } from '@/services/note.ts'
+import { delete_task, generateNote, clearTaskCache } from '@/services/note.ts'
 import { v4 as uuidv4 } from 'uuid'
 import toast from 'react-hot-toast'
 import { get, set, del } from 'idb-keyval'
@@ -23,6 +23,7 @@ export interface TaskCacheFlags {
   audio?: boolean
   transcript?: boolean
   markdown?: boolean
+  gpt_checkpoint?: boolean
 }
 
 export interface AudioMeta {
@@ -90,7 +91,7 @@ interface TaskStore {
   clearTasks: () => void
   setCurrentTask: (taskId: string | null) => void
   getCurrentTask: () => Task | null
-  retryTask: (id: string) => void
+  retryTask: (id: string, payload?: any, options?: { clearCache?: boolean }) => void
 }
 
 export const useTaskStore = create<TaskStore>()(
@@ -187,25 +188,34 @@ export const useTaskStore = create<TaskStore>()(
         const currentTaskId = get().currentTaskId
         return get().tasks.find(task => task.id === currentTaskId) || null
       },
-      retryTask: async (id: string, payload?: any) => {
-
-        if (!id){
+      retryTask: async (id: string, payload?: any, options?: { clearCache?: boolean }) => {
+        if (!id) {
           toast.error('任务不存在')
           return
         }
         const task = get().tasks.find(task => task.id === id)
-        console.log('retry',task)
+        console.log('retry', task, options)
         if (!task) return
 
         const newFormData = payload || task.formData
+        const clearCache = Boolean(options?.clearCache)
+
+        if (clearCache) {
+          try {
+            await clearTaskCache(id)
+            toast.success('已清空管线缓存，将从头生成')
+          } catch (e: any) {
+            toast.error(e?.msg || '清空缓存失败')
+            return
+          }
+        }
+
         try {
           await generateNote({
             ...newFormData,
             task_id: id,
           })
         } catch (e: any) {
-          // 就绪门禁：转写模型未下载好。不要把任务标成 PENDING（会一直转），
-          // 给提示让用户先去下载。
           if (e?.data?.reason === 'transcriber_model_not_ready') {
             toast.error(
               e?.data?.downloading
@@ -218,18 +228,30 @@ export const useTaskStore = create<TaskStore>()(
           return
         }
 
+        const resumeHint = clearCache
+          ? '已清空缓存，重新排队，将从头执行各步骤…'
+          : '重新排队，将尽量复用已有下载/转写缓存…'
+
         set(state => ({
           tasks: state.tasks.map(t =>
-              t.id === id
-                  ? {
-                    ...t,
-                    formData: newFormData, // ✅ 显式更新 formData
-                    status: 'PENDING',
-                    statusMessage: '重新排队，将尽量复用已有缓存…',
-                    errorMessage: '',
-                    failedAtStatus: undefined,
-                  }
-                  : t
+            t.id === id
+              ? {
+                  ...t,
+                  formData: newFormData,
+                  status: 'PENDING',
+                  statusMessage: resumeHint,
+                  errorMessage: '',
+                  failedAtStatus: undefined,
+                  cache: clearCache
+                    ? {
+                        audio: false,
+                        transcript: false,
+                        markdown: false,
+                        gpt_checkpoint: false,
+                      }
+                    : t.cache,
+                }
+              : t
           ),
         }))
       },
