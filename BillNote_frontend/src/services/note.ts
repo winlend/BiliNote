@@ -87,6 +87,7 @@ export const exportMarkdownFile = async (data: {
   task_id?: string
   content?: string
   title?: string
+  filename_suffix?: string
 }): Promise<ExportMarkdownResult> => {
   return await request.post('/export_markdown', data)
 }

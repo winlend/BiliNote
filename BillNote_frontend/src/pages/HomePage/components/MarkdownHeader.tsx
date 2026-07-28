@@ -1,11 +1,14 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { Copy, FileDown, BrainCircuit, MessageSquare } from 'lucide-react'
+import { Copy, FileDown, BrainCircuit, MessageSquare, ChevronDown } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger } from '@/components/ui/select'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { Badge } from '@/components/ui/badge'
+import { Dropdown } from 'antd'
+import type { MenuProps } from 'antd'
+import type { ExportPreset } from '@/lib/exportContent'
 
 interface VersionNote {
   ver_id: string
@@ -25,11 +28,17 @@ interface NoteHeaderProps {
   style: string
   noteStyles: { value: string; label: string }[]
   onCopy: () => void
-  onDownload: () => void
+  /** preset 默认 note；主按钮点击传 note */
+  onDownload: (preset?: ExportPreset) => void
+  hasNote?: boolean
+  hasTranscript?: boolean
   createAt?: string | Date
   setShowTranscribe: (show: boolean) => void
+  showTranscribe?: boolean
   showChat?: false | 'half' | 'full'
   setShowChat?: (mode: false | 'half' | 'full') => void
+  viewMode?: 'map' | 'preview'
+  setViewMode?: (mode: 'map' | 'preview') => void
 }
 
 export function MarkdownHeader({
@@ -42,6 +51,8 @@ export function MarkdownHeader({
   noteStyles,
   onCopy,
   onDownload,
+  hasNote = true,
+  hasTranscript = false,
   createAt,
   showTranscribe,
   setShowTranscribe,
@@ -67,10 +78,6 @@ export function MarkdownHeader({
 
   const styleName = noteStyles.find(v => v.value === style)?.label || style
 
-  const reversedMarkdown: VersionNote[] = Array.isArray(currentTask?.markdown)
-    ? [...currentTask!.markdown].reverse()
-    : []
-
   const formatDate = (date: string | Date | undefined) => {
     if (!date) return ''
     const d = typeof date === 'string' ? new Date(date) : date
@@ -86,23 +93,44 @@ export function MarkdownHeader({
       .replace(/\//g, '-')
   }
 
+  const exportMenuItems: MenuProps['items'] = [
+    {
+      key: 'note',
+      label: '导出笔记',
+      disabled: !hasNote,
+      onClick: () => onDownload('note'),
+    },
+    {
+      key: 'transcript',
+      label: hasTranscript ? '导出原文转写' : '导出原文转写（暂无）',
+      disabled: !hasTranscript,
+      onClick: () => onDownload('transcript'),
+    },
+    {
+      key: 'both',
+      label: '导出笔记 + 原文附录',
+      disabled: !hasNote && !hasTranscript,
+      onClick: () => onDownload('both'),
+    },
+  ]
+
   return (
     <div className="sticky top-0 z-10 flex flex-wrap items-center justify-between gap-3 border-b bg-white/95 px-4 py-2 backdrop-blur-sm">
-      {/* 左侧区域：版本 + 标签 + 创建时间 */}
       <div className="flex flex-wrap items-center gap-3">
         {isMultiVersion && (
           <Select value={currentVerId} onValueChange={setCurrentVerId}>
             <SelectTrigger className="h-8 w-[160px] text-sm">
               <div className="flex items-center">
                 {(() => {
-                  const idx = currentTask?.markdown.findIndex(v => v.ver_id === currentVerId)
+                  const list = Array.isArray(currentTask?.markdown) ? currentTask!.markdown : []
+                  const idx = list.findIndex(v => v.ver_id === currentVerId)
                   return idx !== -1 ? `版本（${currentVerId.slice(-6)}）` : ''
                 })()}
               </div>
             </SelectTrigger>
 
             <SelectContent>
-              {(currentTask?.markdown || []).map((v, idx) => {
+              {(Array.isArray(currentTask?.markdown) ? currentTask!.markdown : []).map(v => {
                 const shortId = v.ver_id.slice(-6)
                 return (
                   <SelectItem key={v.ver_id} value={v.ver_id}>
@@ -126,14 +154,13 @@ export function MarkdownHeader({
         )}
       </div>
 
-      {/* 右侧操作按钮 */}
       <div className="flex items-center gap-1">
         <TooltipProvider>
           <Tooltip>
             <TooltipTrigger asChild>
               <Button
                 onClick={() => {
-                  setViewMode(viewMode == 'preview' ? 'map' : 'preview')
+                  setViewMode?.(viewMode == 'preview' ? 'map' : 'preview')
                 }}
                 variant="ghost"
                 size="sm"
@@ -154,31 +181,46 @@ export function MarkdownHeader({
                 <span className="text-sm">{copied ? '已复制' : '复制'}</span>
               </Button>
             </TooltipTrigger>
-            <TooltipContent>复制内容</TooltipContent>
+            <TooltipContent>复制当前笔记正文</TooltipContent>
           </Tooltip>
         </TooltipProvider>
 
-        <TooltipProvider>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                type="button"
-                onClick={e => {
-                  e.preventDefault()
-                  e.stopPropagation()
-                  onDownload()
-                }}
-                variant="ghost"
-                size="sm"
-                className="h-8 px-2"
-              >
-                <FileDown className="mr-1.5 h-4 w-4" />
-                <span className="text-sm">导出 Markdown</span>
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>保存到笔记目录（并尝试打开该文件夹）</TooltipContent>
-          </Tooltip>
-        </TooltipProvider>
+        <div className="flex items-center">
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  type="button"
+                  onClick={e => {
+                    e.preventDefault()
+                    e.stopPropagation()
+                    onDownload('note')
+                  }}
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 rounded-r-none px-2"
+                  disabled={!hasNote && !hasTranscript}
+                >
+                  <FileDown className="mr-1.5 h-4 w-4" />
+                  <span className="text-sm">导出</span>
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>默认导出 AI 笔记到笔记目录</TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+          <Dropdown menu={{ items: exportMenuItems }} trigger={['click']} placement="bottomRight">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-8 rounded-l-none border-l border-neutral-200 px-1.5"
+              aria-label="更多导出选项"
+            >
+              <ChevronDown className="h-4 w-4" />
+            </Button>
+          </Dropdown>
+        </div>
+
         <TooltipProvider>
           <Tooltip>
             <TooltipTrigger asChild>
@@ -190,7 +232,6 @@ export function MarkdownHeader({
                 size="sm"
                 className="h-8 px-2"
               >
-                {/*<Download className="mr-1.5 h-4 w-4" />*/}
                 <span className="text-sm">原文参照</span>
               </Button>
             </TooltipTrigger>

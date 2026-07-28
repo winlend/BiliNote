@@ -1,10 +1,17 @@
+"""基于 ChromaDB 的笔记向量存储。
+
+桌面安装版常见两点问题：
+1) CWD 在 Program Files 下，vector_db 不可写 → 改到 %LOCALAPPDATA%/BiliNote/vector_db
+2) PyInstaller 漏打 chromadb.telemetry.product.posthog → 导入前注入 stub / 打包 collect-all
+"""
+from __future__ import annotations
+
 import json
 import os
 import re
+import sys
+import types
 from typing import Optional
-
-import chromadb
-from chromadb.config import Settings
 
 from app.utils.logger import get_logger
 
@@ -13,40 +20,151 @@ logger = get_logger(__name__)
 NOTE_OUTPUT_DIR = os.getenv("NOTE_OUTPUT_DIR", "note_results")
 VECTOR_DB_DIR = os.getenv("VECTOR_DB_DIR", "vector_db")
 
+# 在 import chromadb 之前关闭遥测，减少对 posthog 的依赖
+os.environ.setdefault("ANONYMIZED_TELEMETRY", "False")
+os.environ.setdefault("CHROMA_TELEMETRY_IMPL", "none")
+os.environ.setdefault("CHROMA_ANONYMIZED_TELEMETRY", "False")
+
+
+def _install_chromadb_telemetry_stubs() -> None:
+    """PyInstaller 常漏打 chromadb.telemetry.product.posthog，导入前补空模块。"""
+    stubs = [
+        "chromadb.telemetry",
+        "chromadb.telemetry.product",
+        "chromadb.telemetry.product.posthog",
+    ]
+    for name in stubs:
+        if name in sys.modules:
+            continue
+        # 不预先 stub 已存在的包；仅在真正缺 posthog 时由 _import_chromadb 调用
+
+    if "chromadb.telemetry.product.posthog" in sys.modules:
+        return
+
+    # product 包
+    if "chromadb.telemetry.product" not in sys.modules:
+        product = types.ModuleType("chromadb.telemetry.product")
+        product.__path__ = []  # type: ignore[attr-defined]
+        sys.modules["chromadb.telemetry.product"] = product
+
+    posthog_mod = types.ModuleType("chromadb.telemetry.product.posthog")
+
+    class _NoopTelemetry:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def capture(self, *args, **kwargs):
+            return None
+
+        def __getattr__(self, _name):
+            def _noop(*args, **kwargs):
+                return None
+
+            return _noop
+
+    posthog_mod.Posthog = _NoopTelemetry  # type: ignore[attr-defined]
+    posthog_mod.PostHog = _NoopTelemetry  # type: ignore[attr-defined]
+    sys.modules["chromadb.telemetry.product.posthog"] = posthog_mod
+
+
+def _import_chromadb():
+    """导入 chromadb；若缺 posthog 子模块则 stub 后重试。"""
+    try:
+        import chromadb
+        from chromadb.config import Settings
+
+        return chromadb, Settings
+    except ModuleNotFoundError as e:
+        msg = str(e)
+        if "posthog" in msg or "telemetry" in msg:
+            logger.warning(f"chromadb 遥测模块缺失，使用 stub 重试: {e}")
+            _install_chromadb_telemetry_stubs()
+            import chromadb
+            from chromadb.config import Settings
+
+            return chromadb, Settings
+        raise
+
 
 def _note_output_dir() -> str:
     try:
         from app.services.path_config_manager import get_path_config_manager
+
         return get_path_config_manager().get_note_output_dir()
     except Exception:
         return os.getenv("NOTE_OUTPUT_DIR", "note_results")
 
 
+def _is_writable_dir(path: str) -> bool:
+    try:
+        os.makedirs(path, exist_ok=True)
+        probe = os.path.join(path, ".bilinote_write_test")
+        with open(probe, "w", encoding="utf-8") as f:
+            f.write("ok")
+        os.remove(probe)
+        return True
+    except Exception:
+        return False
+
+
+def _default_user_vector_dir() -> str:
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or os.path.expanduser("~")
+        return os.path.join(base, "BiliNote", "vector_db")
+    return os.path.join(os.path.expanduser("~"), ".bilinote", "vector_db")
+
+
 def _vector_db_dir() -> str:
-    """向量库目录：环境变量 VECTOR_DB_DIR，否则放在 CWD/vector_db。"""
+    """向量库目录：VECTOR_DB_DIR > 可写 CWD/vector_db > 用户目录。
+
+    安装在 Program Files 时 CWD 通常不可写，必须落到 LocalAppData。
+    """
     raw = (os.getenv("VECTOR_DB_DIR") or "").strip()
+    candidates = []
     if raw:
-        path = raw
-    else:
-        path = os.path.join(os.getcwd(), "vector_db")
-    os.makedirs(path, exist_ok=True)
-    return path
+        candidates.append(raw)
+    cwd_candidate = os.path.join(os.getcwd(), "vector_db")
+    # 避免优先选 Program Files 下的不可写路径
+    candidates.append(cwd_candidate)
+    candidates.append(_default_user_vector_dir())
+
+    last_err = None
+    for path in candidates:
+        try:
+            if _is_writable_dir(path):
+                if path != cwd_candidate and not raw:
+                    logger.info(f"向量库使用可写目录: {path}")
+                return os.path.abspath(path)
+        except Exception as e:
+            last_err = e
+            continue
+    # 最后一搏
+    fallback = _default_user_vector_dir()
+    try:
+        os.makedirs(fallback, exist_ok=True)
+        return os.path.abspath(fallback)
+    except Exception as e:
+        raise RuntimeError(
+            f"无法创建向量库目录（尝试过 {candidates}）。最后错误: {last_err or e}"
+        ) from e
 
 
 def _chunk_markdown(markdown: str) -> list[dict]:
     """按 H2/H3 标题拆分 markdown 为语义块。"""
-    sections = re.split(r'(?=^#{2,3}\s)', markdown, flags=re.MULTILINE)
+    sections = re.split(r"(?=^#{2,3}\s)", markdown, flags=re.MULTILINE)
     chunks = []
     for section in sections:
         section = section.strip()
         if not section or len(section) < 30:
             continue
-        heading_match = re.match(r'^(#{2,3})\s+(.+)', section)
+        heading_match = re.match(r"^(#{2,3})\s+(.+)", section)
         title = heading_match.group(2).strip() if heading_match else "intro"
-        chunks.append({
-            "text": section,
-            "metadata": {"source_type": "markdown", "section_title": title},
-        })
+        chunks.append(
+            {
+                "text": section,
+                "metadata": {"source_type": "markdown", "section_title": title},
+            }
+        )
     return chunks
 
 
@@ -57,20 +175,20 @@ def _chunk_transcript(segments: list[dict], window_size: int = 15, overlap: int 
     chunks = []
     step = max(window_size - overlap, 1)
     for i in range(0, len(segments), step):
-        window = segments[i:i + window_size]
+        window = segments[i : i + window_size]
         if not window:
             break
-        text = "\n".join(
-            f"[{seg.get('start', 0):.0f}s] {seg.get('text', '')}" for seg in window
+        text = "\n".join(f"[{seg.get('start', 0):.0f}s] {seg.get('text', '')}" for seg in window)
+        chunks.append(
+            {
+                "text": text,
+                "metadata": {
+                    "source_type": "transcript",
+                    "start_time": window[0].get("start", 0),
+                    "end_time": window[-1].get("end", 0),
+                },
+            }
         )
-        chunks.append({
-            "text": text,
-            "metadata": {
-                "source_type": "transcript",
-                "start_time": window[0].get("start", 0),
-                "end_time": window[-1].get("end", 0),
-            },
-        })
     return chunks
 
 
@@ -114,10 +232,12 @@ def _build_meta_chunk(audio_meta: dict) -> list[dict]:
     if not parts:
         return []
 
-    return [{
-        "text": "\n".join(parts),
-        "metadata": {"source_type": "meta"},
-    }]
+    return [
+        {
+            "text": "\n".join(parts),
+            "metadata": {"source_type": "meta"},
+        }
+    ]
 
 
 class VectorStoreManager:
@@ -128,15 +248,32 @@ class VectorStoreManager:
         os.makedirs(db_path, exist_ok=True)
         self._db_path = db_path
         try:
+            chromadb, Settings = _import_chromadb()
             self._client = chromadb.PersistentClient(
                 path=db_path,
                 settings=Settings(anonymized_telemetry=False),
             )
+        except ModuleNotFoundError as e:
+            logger.error(f"chromadb 未安装或不完整: {e}", exc_info=True)
+            raise RuntimeError(
+                "未正确安装 chromadb（或桌面打包时未打入依赖）。"
+                "开发环境请: pip install 'chromadb>=0.5.0'；"
+                "安装版请使用包含 chromadb collect-all 的新包重新 publish。"
+                f" 详情: {e}"
+            ) from e
         except Exception as e:
             logger.error(f"初始化 ChromaDB 失败 path={db_path}: {e}", exc_info=True)
+            hint = ""
+            err = str(e)
+            if "posthog" in err:
+                hint = (
+                    " 这通常是安装包漏打了 chromadb 遥测模块；"
+                    "请更新/重装用新 build.bat 打的版本，或把 VECTOR_DB_DIR 设到可写目录后重试。"
+                )
+            if "Permission" in err or "Access is denied" in err:
+                hint += f" 目录可能不可写，已尝试使用: {db_path}。"
             raise RuntimeError(
-                f"向量数据库初始化失败（{db_path}）。请确认已安装 chromadb，"
-                f"且目录可写。详情: {e}"
+                f"向量数据库初始化失败（{db_path}）。请确认 chromadb 完整且目录可写。{hint} 详情: {e}"
             ) from e
 
     def _collection_name(self, task_id: str) -> str:
@@ -156,7 +293,6 @@ class VectorStoreManager:
             note_data = json.load(f)
 
         markdown = note_data.get("markdown", "") or ""
-        # 多版本 markdown 可能是 list
         if isinstance(markdown, list):
             parts = []
             for item in markdown:
@@ -185,7 +321,6 @@ class VectorStoreManager:
 
         col_name = self._collection_name(task_id)
 
-        # 删除旧 collection（幂等）
         try:
             self._client.delete_collection(col_name)
         except Exception:
@@ -201,11 +336,9 @@ class VectorStoreManager:
             metadatas = [c["metadata"] for c in all_chunks]
             ids = [f"{task_id}_{i}" for i in range(len(all_chunks))]
 
-            # 默认会拉 all-MiniLM 等 embedding；首次需联网，失败时给出明确错误
             collection.add(documents=documents, metadatas=metadatas, ids=ids)
         except Exception as e:
             logger.error(f"写入向量索引失败 task_id={task_id}: {e}", exc_info=True)
-            # 尽量清掉半成品 collection
             try:
                 self._client.delete_collection(col_name)
             except Exception:
@@ -226,11 +359,13 @@ class VectorStoreManager:
         if not results or not results.get("documents") or not results["documents"][0]:
             return chunks
         for i in range(len(results["documents"][0])):
-            chunks.append({
-                "text": results["documents"][0][i],
-                "metadata": results["metadatas"][0][i] if results["metadatas"] else {},
-                "distance": results["distances"][0][i] if results["distances"] else None,
-            })
+            chunks.append(
+                {
+                    "text": results["documents"][0][i],
+                    "metadata": results["metadatas"][0][i] if results["metadatas"] else {},
+                    "distance": results["distances"][0][i] if results["distances"] else None,
+                }
+            )
         return chunks
 
     def query(self, task_id: str, query_text: str, n_results: int = 6) -> list[dict]:
@@ -246,8 +381,6 @@ class VectorStoreManager:
             return []
 
         all_chunks = []
-
-        # 每种来源的配额
         quotas = {"meta": 1, "markdown": 2, "transcript": 3}
 
         for source_type, quota in quotas.items():
@@ -279,7 +412,6 @@ class VectorStoreManager:
             col = self._client.get_collection(col_name)
             if col.count() == 0:
                 return False
-            # 检查是否包含 meta chunk，旧索引可能缺失
             meta = col.get(where={"source_type": "meta"}, limit=1)
             return len(meta["ids"]) > 0
         except Exception:

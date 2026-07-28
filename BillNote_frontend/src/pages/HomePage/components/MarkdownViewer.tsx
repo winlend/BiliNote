@@ -5,6 +5,12 @@ import { Button } from '@/components/ui/button.tsx'
 import { Copy, Download, ArrowRight, Play, ExternalLink } from 'lucide-react'
 import { toast } from 'react-hot-toast'
 import { getErrorGuides } from '@/lib/errorGuides'
+import {
+  buildExportMarkdown,
+  hasTranscript,
+  resolveNoteMarkdown,
+  type ExportPreset,
+} from '@/lib/exportContent'
 import Error from '@/components/Lottie/error.tsx'
 import Loading from '@/components/Lottie/Loading.tsx'
 import Idle from '@/components/Lottie/Idle.tsx'
@@ -493,66 +499,69 @@ const MarkdownViewer: FC<MarkdownViewerProps> = memo(({ status }) => {
     },
   }
   const resolveExportContent = (): string => {
-    let content = (selectedContent || '').trim()
-    if (!content && currentTask) {
-      const md = currentTask.markdown as unknown
-      if (typeof md === 'string') content = md.trim()
-      else if (Array.isArray(md) && md.length) {
-        const latest = [...md].sort(
-          (a: any, b: any) =>
-            new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime()
-        )[0]
-        content = String(latest?.content || '').trim()
-      }
-    }
-    return content
+    return resolveNoteMarkdown(selectedContent, currentTask?.markdown as any)
   }
 
-  const handleDownload = async () => {
-    // 立刻反馈，避免 WebView 静默无响应被当成「没点到」
-    toast.loading('正在导出 Markdown…', { id: 'export-md' })
+  const handleDownload = async (preset: ExportPreset = 'note') => {
+    toast.loading('正在导出…', { id: 'export-md' })
     try {
-      const content = resolveExportContent()
+      const noteMd = resolveExportContent()
       const rawTitle =
         currentTask?.audioMeta?.title ||
         getCurrentTask()?.audioMeta?.title ||
         'note'
       const taskId = currentTask?.id || getCurrentTask()?.id
+      const transcript = currentTask?.transcript || getCurrentTask()?.transcript
 
-      // 1) 后端落盘：桌面 Tauri 最可靠
+      const built = buildExportMarkdown({
+        preset,
+        noteMarkdown: noteMd,
+        transcript,
+        title: String(rawTitle),
+      })
+      const content = built.content
+
+      if (!content) {
+        if (preset === 'transcript') {
+          toast.error('暂无原文转写可导出', { id: 'export-md' })
+        } else if (preset === 'both' && !noteMd) {
+          toast.error('没有可导出的笔记或原文', { id: 'export-md' })
+        } else {
+          toast.error(
+            '当前没有可导出的 Markdown。可先点「复制」确认正文，或到「数据与存储」打开笔记目录。',
+            { id: 'export-md', duration: 5000 }
+          )
+        }
+        return
+      }
+
       try {
         const { exportMarkdownFile } = await import('@/services/note')
         const { openFolder } = await import('@/services/paths')
         const res = await exportMarkdownFile({
           task_id: taskId,
-          content: content || undefined,
+          content,
           title: String(rawTitle),
+          filename_suffix: built.suffix,
         })
-        toast.success(`已保存：${res.filename}\n目录：${res.dir}`, {
+        toast.success(`已保存${built.label}：${res.filename}\n目录：${res.dir}`, {
           id: 'export-md',
           duration: 5000,
         })
-        // 尽量打开笔记目录，方便用户直接看到文件
         try {
           await openFolder('note_output_dir')
         } catch {
-          /* 打开目录失败不阻断 */
+          /* ignore */
         }
         return
       } catch (backendErr: any) {
         console.warn('后端导出失败，尝试浏览器下载/复制', backendErr)
-        // 若后端明确说没有内容，直接提示
-        if (!content) {
-          toast.error(
-            backendErr?.msg ||
-              '当前没有可导出的 Markdown。可先点「复制」确认正文，或到「数据与存储」打开笔记目录查看文件。',
-            { id: 'export-md', duration: 5000 }
-          )
-          return
-        }
+        toast.error(
+          backendErr?.msg || '后端导出失败，尝试本地下载…',
+          { id: 'export-md', duration: 3000 }
+        )
       }
 
-      // 2) 浏览器 a[download] 兜底（纯 Web 可用；Tauri 常无效）
       const safeName =
         String(rawTitle)
           .replace(/[\\/:*?"<>|]+/g, '_')
@@ -563,7 +572,7 @@ const MarkdownViewer: FC<MarkdownViewerProps> = memo(({ status }) => {
       const url = URL.createObjectURL(blob)
       const link = document.createElement('a')
       link.href = url
-      link.download = `${safeName}.md`
+      link.download = `${safeName}_${built.suffix}.md`
       link.rel = 'noopener'
       document.body.appendChild(link)
       link.click()
@@ -576,11 +585,10 @@ const MarkdownViewer: FC<MarkdownViewerProps> = memo(({ status }) => {
         URL.revokeObjectURL(url)
       }, 1500)
 
-      // 3) 同时写入剪贴板，保证桌面端至少有一条成功路径
       try {
         await navigator.clipboard.writeText(content)
         toast.success(
-          '已尝试下载，并复制全文到剪贴板（桌面端若未出现文件，请粘贴到记事本保存为 .md）',
+          '已尝试下载，并复制全文到剪贴板（若未出现文件请粘贴保存为 .md）',
           { id: 'export-md', duration: 6000 }
         )
       } catch {
@@ -590,8 +598,8 @@ const MarkdownViewer: FC<MarkdownViewerProps> = memo(({ status }) => {
         })
       }
     } catch (e) {
-      console.error('导出 Markdown 失败', e)
-      toast.error('导出失败，请使用「复制」后自行保存为 .md 文件', { id: 'export-md' })
+      console.error('导出失败', e)
+      toast.error('导出失败，请使用「复制」后自行保存', { id: 'export-md' })
     }
   }
 
@@ -768,6 +776,8 @@ const MarkdownViewer: FC<MarkdownViewerProps> = memo(({ status }) => {
         noteStyles={noteStyles}
         onCopy={handleCopy}
         onDownload={handleDownload}
+        hasNote={Boolean(resolveExportContent())}
+        hasTranscript={hasTranscript(currentTask?.transcript)}
         createAt={createTime}
         showTranscribe={showTranscribe}
         setShowTranscribe={setShowTranscribe}

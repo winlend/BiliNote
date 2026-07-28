@@ -41,6 +41,15 @@ pyinstaller ^
   --hidden-import uvicorn ^
   --hidden-import fastapi ^
   --hidden-import starlette ^
+  --hidden-import chromadb ^
+  --hidden-import chromadb.config ^
+  --hidden-import chromadb.telemetry ^
+  --hidden-import chromadb.telemetry.product ^
+  --hidden-import chromadb.telemetry.product.posthog ^
+  --hidden-import posthog ^
+  --collect-all chromadb ^
+  --collect-all posthog ^
+  --collect-all onnxruntime ^
   --add-data "app\db\builtin_providers.json;." ^
   --add-data ".env;." ^
   backend\main.py

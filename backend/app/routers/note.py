@@ -267,6 +267,8 @@ class ExportMarkdownRequest(BaseModel):
     task_id: Optional[str] = None
     content: Optional[str] = None
     title: Optional[str] = None
+    # note | transcript | note_transcript | custom suffix for filename
+    filename_suffix: Optional[str] = None
 
 
 def _safe_filename(name: str) -> str:
@@ -284,6 +286,8 @@ def export_markdown(data: ExportMarkdownRequest):
     content = (data.content or "").strip()
     title = (data.title or "").strip()
     task_id = (data.task_id or "").strip() or None
+    suffix = (data.filename_suffix or "note").strip() or "note"
+    suffix = re.sub(r"[^\w\-]+", "_", suffix)[:40]
 
     out = _note_output_dir()
     os.makedirs(out, exist_ok=True)
@@ -320,11 +324,10 @@ def export_markdown(data: ExportMarkdownRequest):
         )
 
     safe = _safe_filename(title or (task_id or "note"))
-    # 固定可预期文件名，便于用户在笔记目录找到
     if task_id and not any(ch in task_id for ch in ("/", "\\", "..")):
-        filename = f"{safe}_{task_id[:8]}.md"
+        filename = f"{safe}_{suffix}_{task_id[:8]}.md"
     else:
-        filename = f"{safe}.md"
+        filename = f"{safe}_{suffix}.md"
     path = os.path.join(out, filename)
     try:
         with open(path, "w", encoding="utf-8") as f:
