@@ -1,14 +1,13 @@
 """路径配置：笔记 / 下载 / 截图 / 向量库 / FFmpeg。
 
-务实策略（桌面安装在 Program Files 时）：
-- 未配置时优先使用「用户可写数据根」：
-  Windows: %LOCALAPPDATA%\\BiliNote
-  其它: ~/.bilinote
-- 若 CWD 可写且不在 Program Files 下（开发/便携），仍可用 CWD 相对目录
-- 设置页可覆盖为任意可写绝对路径（含 D:\\BiliNoteData\\...）
-- 保存时做可写探测；Program Files 路径会明确失败提示
+默认策略（与历史桌面行为一致，并兼顾权限）：
+- 未单独配置时：优先 CWD（安装目录 / 开发 backend 目录）下的相对子目录
+  例如 D:\\Program Files\\BiliNote\\note_results —— 只要该处可写
+- 仅当 CWD 不可写时，才回退到用户数据根：
+  Windows %LOCALAPPDATA%\\BiliNote\\...  或  ~/.bilinote/...
+- 设置页可覆盖为任意**可写**绝对路径；不可写则保存失败并提示
 
-优先级：config/paths.json > 环境变量 > 智能默认
+优先级：config/paths.json > 环境变量 > 上述默认
 """
 from __future__ import annotations
 
@@ -61,12 +60,17 @@ def _is_writable_dir(path: Path) -> bool:
 
 
 def default_data_root() -> Path:
-    """未配置时的数据根：CWD 可写且非 Program Files 则用 CWD，否则用户目录。"""
+    """未配置时的数据根：CWD（安装目录）可写则用 CWD，否则用户目录。
+
+    与历史行为对齐：sidecar current_dir 即安装目录时，缓存默认就在安装目录旁。
+    Program Files 若当前用户可写（你机器上常见），继续用安装目录，不强制迁到 AppData。
+    """
     cwd = Path.cwd()
-    if not _is_program_files_path(cwd) and _is_writable_dir(cwd):
+    if _is_writable_dir(cwd):
         return cwd
     root = get_user_data_root()
     root.mkdir(parents=True, exist_ok=True)
+    logger.info(f"CWD 不可写，数据根回退到用户目录: {cwd} -> {root}")
     return root
 
 
@@ -107,7 +111,7 @@ class PathConfigManager:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
     def _resolve_path(self, raw: Optional[str], default_name: str) -> str:
-        """解析配置/env/默认目录名，保证可写。"""
+        """解析配置/env/默认目录名；优先保持安装目录，不可写再回退。"""
         value = (raw or "").strip()
         if value:
             p = Path(value).expanduser()
@@ -116,17 +120,18 @@ class PathConfigManager:
             else:
                 p = p.resolve()
         else:
+            # 默认：安装目录（CWD）下的子目录，与历史一致
             p = (default_data_root() / default_name).resolve()
 
-        if not _is_writable_dir(p):
-            # 回退到用户数据根下同名子目录
-            fallback = (get_user_data_root() / default_name).resolve()
-            if _is_writable_dir(fallback):
-                if _is_program_files_path(p) or str(p) != str(fallback):
-                    logger.info(f"目录不可写，回退: {p} -> {fallback}")
-                return str(fallback)
-            raise RuntimeError(f"目录不可写且无法回退: {p}")
-        return str(p)
+        if _is_writable_dir(p):
+            return str(p)
+
+        # 显式配置了路径但不可写：仍尝试用户目录回退，避免直接崩
+        fallback = (get_user_data_root() / default_name).resolve()
+        if _is_writable_dir(fallback):
+            logger.warning(f"目录不可写，回退: {p} -> {fallback}")
+            return str(fallback)
+        raise RuntimeError(f"目录不可写且无法回退: {p}")
 
     def get_note_output_dir(self) -> str:
         data = self._read()
@@ -242,13 +247,16 @@ class PathConfigManager:
                 p = (Path.cwd() / p).resolve()
             else:
                 p = p.resolve()
-            if _is_program_files_path(p):
-                raise ValueError(
-                    f"不建议使用 Program Files 路径（可能无写权限）: {p}。"
-                    f"请改用例如 {get_user_data_root()} 或 D:\\BiliNoteData\\..."
-                )
             if not _is_writable_dir(p):
-                raise ValueError(f"目录不可用或不可写: {p}")
+                extra = ""
+                if _is_program_files_path(p):
+                    extra = (
+                        f" 若在 Program Files 下无权限，可改用安装目录旁其它可写盘，"
+                        f"或 {get_user_data_root()} ，或点击「使用推荐可写目录」。"
+                    )
+                raise ValueError(f"目录不可用或不可写: {p}.{extra}")
+            if _is_program_files_path(p):
+                logger.info(f"使用 Program Files 下可写路径（当前用户可写）: {p}")
             data[key] = str(p)
 
         _save_dir("note_output_dir", note_output_dir)

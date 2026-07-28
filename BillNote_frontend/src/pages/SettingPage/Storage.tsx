@@ -81,7 +81,7 @@ export default function Storage() {
   const handleRecommended = async () => {
     const root = config?.suggested?.data_root || config?.effective?.user_data_root || ''
     const ok = window.confirm(
-      `将把笔记/下载/向量库/日志切换到用户可写目录：\n${root}\n\n` +
+      `可选：将笔记/下载/向量库/日志切换到用户目录（安装目录写不进时再用）：\n${root}\n\n` +
         '不会自动迁移旧文件。若数据仍在安装目录，请自行复制。\n\n继续？',
     )
     if (!ok) return
@@ -112,7 +112,7 @@ export default function Storage() {
       <div>
         <h2 className="text-2xl font-semibold">数据与存储</h2>
         <p className="mt-1 text-sm text-neutral-500">
-          配置笔记、下载、向量库等路径。安装在 Program Files 时请使用用户可写目录，避免权限问题。
+          配置笔记、下载、向量库等路径。默认优先使用安装目录（与后端工作目录相同）；若无写权限再回退到用户目录。
         </p>
       </div>
 
@@ -120,9 +120,9 @@ export default function Storage() {
         <Alert variant="warning">
           <Info className="h-4 w-4" />
           <AlertDescription className="text-sm">
-            检测到后端工作目录位于 <strong>Program Files</strong>（
+            后端工作目录在 <strong>Program Files</strong>（
             <code className="text-xs">{config?.effective?.cwd}</code>
-            ）。此处默认可能无写权限。建议点击下方「使用推荐可写目录」，或手动改到例如{' '}
+            ）。若当前可写，默认缓存仍可放在安装目录内。若保存/索引报无权限，再点「使用推荐可写目录」或改到{' '}
             <code className="text-xs">D:\BiliNoteData\...</code>。
           </AlertDescription>
         </Alert>
@@ -131,8 +131,8 @@ export default function Storage() {
       <Alert>
         <Info className="h-4 w-4" />
         <AlertDescription className="text-sm">
-          修改目录后<strong>不会自动迁移</strong>旧文件。向量库用于 AI 问答索引；与笔记目录可分开配置。
-          不建议填 Program Files 路径（保存时会拒绝）。
+          修改目录后<strong>不会自动迁移</strong>旧文件。向量库用于 AI 问答索引，可与笔记目录分开配置。
+          路径必须可写；不可写时保存会失败。
         </AlertDescription>
       </Alert>
 

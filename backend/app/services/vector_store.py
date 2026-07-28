@@ -1,7 +1,8 @@
 """基于 ChromaDB 的笔记向量存储。
 
-桌面安装版常见两点问题：
-1) CWD 在 Program Files 下，vector_db 不可写 → 改到 %LOCALAPPDATA%/BiliNote/vector_db
+桌面安装版注意：
+1) 向量库路径走 PathConfigManager：默认 CWD（安装目录）可写则用安装目录旁 vector_db；
+   仅不可写时回退 %LOCALAPPDATA%/BiliNote/vector_db
 2) PyInstaller 漏打 chromadb.telemetry.product.posthog → 导入前注入 stub / 打包 collect-all
 """
 from __future__ import annotations
