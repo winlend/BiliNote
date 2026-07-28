@@ -5,6 +5,7 @@ import {
   Info,
   Activity,
   FolderCog,
+  MessageSquare,
 } from 'lucide-react'
 import MenuBar, { IMenuProps } from '@/pages/SettingPage/components/menuBar.tsx'
 
@@ -35,6 +36,12 @@ const Menu = () => {
       path: '/settings/storage',
     },
     {
+      id: 'ai-index',
+      name: 'AI 问答 / 索引',
+      icon: <MessageSquare />,
+      path: '/settings/ai-index',
+    },
+    {
       id: 'monitor',
       name: '部署监控',
       icon: <Activity />,
@@ -46,12 +53,6 @@ const Menu = () => {
       icon: <Info />,
       path: '/settings/about',
     },
-    // {
-    //   id: 'other',
-    //   name: '其他配置',
-    //   icon: <Wrench />,
-    //   path: '/settings/other',
-    // },
   ]
   return (
     <div className="flex h-full flex-col">

@@ -27,7 +27,7 @@ interface NoteHeaderProps {
   modelName: string
   style: string
   noteStyles: { value: string; label: string }[]
-  onCopy: () => void
+  onCopy: (preset?: ExportPreset) => void
   /** preset 默认 note；主按钮点击传 note */
   onDownload: (preset?: ExportPreset) => void
   hasNote?: boolean
@@ -71,8 +71,8 @@ export function MarkdownHeader({
     return () => clearTimeout(timer)
   }, [copied])
 
-  const handleCopy = () => {
-    onCopy()
+  const handleCopy = (preset: ExportPreset = 'note') => {
+    onCopy(preset)
     setCopied(true)
   }
 
@@ -92,6 +92,27 @@ export function MarkdownHeader({
       })
       .replace(/\//g, '-')
   }
+
+  const copyMenuItems: MenuProps['items'] = [
+    {
+      key: 'note',
+      label: '复制笔记',
+      disabled: !hasNote,
+      onClick: () => handleCopy('note'),
+    },
+    {
+      key: 'transcript',
+      label: hasTranscript ? '复制原文转写' : '复制原文转写（暂无）',
+      disabled: !hasTranscript,
+      onClick: () => handleCopy('transcript'),
+    },
+    {
+      key: 'both',
+      label: '复制笔记 + 原文',
+      disabled: !hasNote && !hasTranscript,
+      onClick: () => handleCopy('both'),
+    },
+  ]
 
   const exportMenuItems: MenuProps['items'] = [
     {
@@ -173,17 +194,37 @@ export function MarkdownHeader({
             <TooltipContent>思维导图</TooltipContent>
           </Tooltip>
         </TooltipProvider>
-        <TooltipProvider>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button onClick={handleCopy} variant="ghost" size="sm" className="h-8 px-2">
-                <Copy className="mr-1.5 h-4 w-4" />
-                <span className="text-sm">{copied ? '已复制' : '复制'}</span>
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>复制当前笔记正文</TooltipContent>
-          </Tooltip>
-        </TooltipProvider>
+        <div className="flex items-center">
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  type="button"
+                  onClick={() => handleCopy('note')}
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 rounded-r-none px-2"
+                  disabled={!hasNote && !hasTranscript}
+                >
+                  <Copy className="mr-1.5 h-4 w-4" />
+                  <span className="text-sm">{copied ? '已复制' : '复制'}</span>
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>默认复制 AI 笔记正文</TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+          <Dropdown menu={{ items: copyMenuItems }} trigger={['click']} placement="bottomRight">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-8 rounded-l-none border-l border-neutral-200 px-1.5"
+              aria-label="更多复制选项"
+            >
+              <ChevronDown className="h-4 w-4" />
+            </Button>
+          </Dropdown>
+        </div>
 
         <div className="flex items-center">
           <TooltipProvider>

@@ -16,7 +16,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { useProviderStore } from '@/store/providerStore'
 import { useEffect, useState } from 'react'
 import toast from 'react-hot-toast'
-import { testConnection, fetchModels, deleteModelById } from '@/services/model.ts'
+import { testConnection, testTranscriptionConnection, fetchModels, deleteModelById } from '@/services/model.ts'
 import {
   Select,
   SelectContent,
@@ -65,6 +65,7 @@ const ProviderForm = ({ isCreate = false }: { isCreate?: boolean }) => {
   const addNewProvider = useProviderStore(state => state.addNewProvider)
   const [loading, setLoading] = useState(true)
   const [testing, setTesting] = useState(false)
+  const [testingAsr, setTestingAsr] = useState(false)
   const [isBuiltIn, setIsBuiltIn] = useState(false)
   const loadModelsById= useModelStore(state => state.loadModelsById)
   const [modelOptions, setModelOptions] = useState<IModel[]>([]) // ⚡新增，保存模型列表
@@ -137,7 +138,7 @@ const ProviderForm = ({ isCreate = false }: { isCreate?: boolean }) => {
       toast.error('删除异常')
     }
   }
-  // 测试连通性
+  // 测试 Chat 连通性
   const handleTest = async () => {
     const values = providerForm.getValues()
     if (!values.apiKey || !values.baseUrl) {
@@ -145,21 +146,41 @@ const ProviderForm = ({ isCreate = false }: { isCreate?: boolean }) => {
       return
     }
     try {
-      if (!id){
+      if (!id) {
         toast.error('请先保存供应商信息')
         return
       }
       setTesting(true)
-      await testConnection({
-        id,
-      })
-      // 仅验证 chat.completions；音频转写（如 Groq Whisper）需另配转写引擎/模型
+      await testConnection({ id })
       toast.success('Chat 连通性成功（未测试音频转写）🎉')
     } catch (error: any) {
       const msg = error?.msg || error?.message || '未知错误'
-      toast.error(`连接失败: ${msg}`)
+      toast.error(`Chat 连接失败: ${msg}`)
     } finally {
       setTesting(false)
+    }
+  }
+
+  // 可选：测试音频转写（Groq Whisper 等）
+  const handleTestTranscription = async () => {
+    const values = providerForm.getValues()
+    if (!values.apiKey || !values.baseUrl) {
+      toast.error('请填写 API Key 和 Base URL')
+      return
+    }
+    if (!id) {
+      toast.error('请先保存供应商信息')
+      return
+    }
+    try {
+      setTestingAsr(true)
+      await testTranscriptionConnection({ id })
+      toast.success('转写连通性成功（audio.transcriptions）🎉')
+    } catch (error: any) {
+      const msg = error?.msg || error?.message || '未知错误'
+      toast.error(`转写测试失败: ${msg}`, { duration: 6000 })
+    } finally {
+      setTestingAsr(false)
     }
   }
 
@@ -268,8 +289,17 @@ const ProviderForm = ({ isCreate = false }: { isCreate?: boolean }) => {
                 <FormControl>
                   <Input {...field} className="flex-1" />
                 </FormControl>
-                <Button type="button" onClick={handleTest} variant="ghost" disabled={testing}>
+                <Button type="button" onClick={handleTest} variant="ghost" disabled={testing || testingAsr}>
                   {testing ? '测试中...' : '测试 Chat 连通性'}
+                </Button>
+                <Button
+                  type="button"
+                  onClick={handleTestTranscription}
+                  variant="ghost"
+                  disabled={testing || testingAsr}
+                  title="向 audio.transcriptions 发送极短静音，验证转写 API（如 Groq Whisper）"
+                >
+                  {testingAsr ? '测转写中...' : '测转写（可选）'}
                 </Button>
                 <FormMessage />
               </FormItem>

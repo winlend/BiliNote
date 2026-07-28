@@ -138,8 +138,51 @@ class ModelService:
             return True
         raise ProviderError(
             code=ProviderErrorEnum.WRONG_PARAMETER.code,
-            message=ProviderErrorEnum.WRONG_PARAMETER.message,
+            message="Chat 连通性测试失败，请检查 API Key / Base URL / 模型名",
         )
+
+    @staticmethod
+    def transcription_connect_test(
+        id: str, model: str | None = None
+    ) -> bool:
+        """测 audio.transcriptions（与 Chat 分离）。
+
+        model：显式传入 > 转写配置 groq_transcriber_model > env > whisper-large-v3-turbo
+        """
+        provider = ProviderService.get_provider_by_id(id)
+        if not provider:
+            raise ProviderError(
+                code=ProviderErrorEnum.NOT_FOUND.code,
+                message=ProviderErrorEnum.NOT_FOUND.message,
+            )
+        if not provider.get("api_key"):
+            raise ProviderError(
+                code=ProviderErrorEnum.NOT_FOUND.code,
+                message="请先配置 API Key",
+            )
+
+        if not model:
+            try:
+                from app.services.transcriber_config_manager import TranscriberConfigManager
+                model = TranscriberConfigManager().get_groq_transcriber_model()
+            except Exception:
+                model = None
+            if not model:
+                import os
+                model = (os.getenv("GROQ_TRANSCRIBER_MODEL") or "whisper-large-v3-turbo").strip()
+
+        try:
+            return OpenAICompatibleProvider.test_transcription(
+                api_key=provider.get("api_key"),
+                base_url=provider.get("base_url"),
+                model=model,
+            )
+        except Exception as e:
+            raise ProviderError(
+                code=ProviderErrorEnum.WRONG_PARAMETER.code,
+                message=f"转写连通性失败（model={model}）: {e}",
+            ) from e
+
 
 
 

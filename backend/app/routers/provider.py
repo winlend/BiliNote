@@ -94,4 +94,22 @@ def update_provider(data: ProviderUpdateRequest):
 @router.post('/connect_test')
 def gpt_connect_test(data: TestRequest):
     ModelService().connect_test(data.id, model=data.model)
-    return R.success(msg='连接成功')
+    return R.success(msg='Chat 连接成功（未测试音频转写）')
+
+
+class TranscriptionTestRequest(BaseModel):
+    id: str
+    # 可选：whisper 模型名；默认读转写配置 / env
+    model: Optional[str] = None
+
+
+@router.post("/transcription_connect_test")
+def transcription_connect_test(data: TranscriptionTestRequest):
+    """可选：测 audio.transcriptions（Groq 等）。与 Chat 测试分离。"""
+    try:
+        ModelService.transcription_connect_test(data.id, model=data.model)
+        return R.success(msg="转写连通性成功")
+    except ProviderError as e:
+        return R.error(msg=str(e.message if hasattr(e, "message") else e))
+    except Exception as e:
+        return R.error(msg=str(e))

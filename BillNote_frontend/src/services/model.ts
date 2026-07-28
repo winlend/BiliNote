@@ -23,6 +23,14 @@ export const testConnection = async (data: any, opts?: CallOpts) => {
   return await request.post('/connect_test', data, cfg(opts))
 }
 
+/** 测 audio.transcriptions（Groq Whisper 等），与 Chat 分离 */
+export const testTranscriptionConnection = async (
+  data: { id: string; model?: string },
+  opts?: CallOpts,
+) => {
+  return await request.post('/transcription_connect_test', data, cfg(opts))
+}
+
 export const fetchModels = async (providerId: string) => {
   return await request.get('/model_list/' + providerId)
 }

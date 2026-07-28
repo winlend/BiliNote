@@ -256,6 +256,10 @@ export default function Storage() {
                 {config?.effective?.vector_db_dir}
               </code>
             </p>
+            <p className="text-xs text-neutral-500">
+              AI 问答会为每条成功笔记自动建索引；失败时可在笔记页侧栏点「重新索引」。
+              首次可能需联网下载 Embedding 模型。路径变更后请对新任务重新索引。
+            </p>
           </div>
 
           <div className="space-y-2">

@@ -461,11 +461,25 @@ const MarkdownViewer: FC<MarkdownViewerProps> = memo(({ status }) => {
       setSelectedContent(currentVer.content)
     }
   }, [currentVerId, currentTask?.id])
-  const handleCopy = async () => {
+  const handleCopy = async (preset: ExportPreset = 'note') => {
     try {
-      await navigator.clipboard.writeText(selectedContent)
+      const noteMd = resolveExportContent()
+      const rawTitle = currentTask?.audioMeta?.title || getCurrentTask()?.audioMeta?.title || 'note'
+      const transcript = currentTask?.transcript || getCurrentTask()?.transcript
+      const built = buildExportMarkdown({
+        preset,
+        noteMarkdown: noteMd,
+        transcript,
+        title: String(rawTitle),
+      })
+      if (!built.content) {
+        if (preset === 'transcript') toast.error('暂无原文转写可复制')
+        else toast.error('没有可复制的内容')
+        return
+      }
+      await navigator.clipboard.writeText(built.content)
       setCopied(true)
-      toast.success('已复制到剪贴板')
+      toast.success(`已复制${built.label}到剪贴板`)
       setTimeout(() => setCopied(false), 2000)
     } catch (e) {
       toast.error('复制失败')

@@ -228,13 +228,17 @@ export default function ChatPanel({ taskId, mode, onModeChange }: ChatPanelProps
   )
 
   if (indexStatus === null || indexStatus === 'indexing' || indexStatus === 'idle') {
+    const longWaitHint =
+      indexError ||
+      '首次索引可能需要下载 Embedding 模型（约 80MB，需联网）。若超过几分钟仍无进展，请查看后端 logs 或到「设置 → 数据与存储」确认向量库目录可写。'
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 text-neutral-400">
         <Loader2 className="h-6 w-6 animate-spin" />
-        <div className="text-center px-4">
-          <p className="text-sm font-medium">正在索引笔记内容...</p>
-          <p className="mt-1 text-xs">
-            首次使用可能需下载 Embedding 模型（约 80MB），请保持联网并耐心等待
+        <div className="px-4 text-center">
+          <p className="text-sm font-medium text-neutral-600">正在建立向量索引…</p>
+          <p className="mt-2 max-w-sm text-xs leading-relaxed text-neutral-400">{longWaitHint}</p>
+          <p className="mt-2 text-[11px] text-neutral-300">
+            可到「设置 → AI 问答 / 索引」查看路径或强制重新索引
           </p>
         </div>
       </div>
@@ -242,17 +246,21 @@ export default function ChatPanel({ taskId, mode, onModeChange }: ChatPanelProps
   }
 
   if (indexStatus === 'failed') {
+    const friendly =
+      indexError ||
+      '索引失败。常见原因：chromadb 未完整打包、向量库目录无写权限、首次模型下载失败、笔记文件不在当前笔记目录。'
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 px-4 text-neutral-500">
         <span className="text-sm font-medium text-red-500">索引失败</span>
-        {indexError ? (
-          <p className="max-w-sm break-words text-center text-xs text-red-400/90">{indexError}</p>
-        ) : (
-          <p className="text-xs text-neutral-400">请重试；仍失败请查看后端 logs/app.log</p>
-        )}
-        <Button size="sm" variant="outline" onClick={handleReindex}>
-          重新索引
-        </Button>
+        <p className="max-w-sm break-words text-center text-xs text-red-400/90">{friendly}</p>
+        <p className="max-w-sm text-center text-[11px] text-neutral-400">
+          可检查：后端 logs/app.log、设置里的向量库目录、是否使用含 chromadb 的新安装包。
+        </p>
+        <div className="flex flex-wrap items-center justify-center gap-2">
+          <Button size="sm" variant="outline" onClick={handleReindex}>
+            重新索引
+          </Button>
+        </div>
       </div>
     )
   }
@@ -263,6 +271,15 @@ export default function ChatPanel({ taskId, mode, onModeChange }: ChatPanelProps
       <div className="flex items-center justify-between border-b px-3 py-2">
         <span className="text-sm font-medium">AI 问答</span>
         <div className="flex items-center gap-1">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 px-2 text-xs text-neutral-400 hover:text-neutral-600"
+            onClick={handleReindex}
+            title="强制重建向量索引"
+          >
+            重新索引
+          </Button>
           <Button
             variant="ghost"
             size="sm"

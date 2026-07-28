@@ -39,3 +39,39 @@ class OpenAICompatibleProvider:
         except Exception as e:
             logging.warning(f"连通性测试失败（model={model}）：{e}")
             return False
+
+    @staticmethod
+    def test_transcription(api_key: str, base_url: str, model: str) -> bool:
+        """用极短静音 wav 测 audio.transcriptions（Groq Whisper 等）。
+
+        与 chat 连通性独立：Chat 通不代表转写可用。
+        """
+        import io
+        import wave
+        import struct
+
+        try:
+            client = build_openai_client(
+                api_key, base_url, key_label="转写 API Key", timeout=30.0,
+            )
+            # 0.3s 静音 mono 16-bit 16kHz
+            buf = io.BytesIO()
+            rate, duration, amp = 16000, 0.3, 0
+            nframes = int(rate * duration)
+            with wave.open(buf, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(rate)
+                wf.writeframes(struct.pack("<" + "h" * nframes, *([amp] * nframes)))
+            buf.seek(0)
+            buf.name = "ping.wav"  # type: ignore[attr-defined]
+            client.audio.transcriptions.create(
+                model=model,
+                file=buf,
+                response_format="text",
+            )
+            logging.info(f"转写连通性测试成功（model={model}）")
+            return True
+        except Exception as e:
+            logging.warning(f"转写连通性测试失败（model={model}）：{e}")
+            raise
