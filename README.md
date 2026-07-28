@@ -3,23 +3,29 @@
     <p align="center">
   <img src="./doc/icon.svg" alt="BiliNote Banner" width="50" height="50"  />
 </p>
-<h1 align="center" > BiliNote v2.4.4</h1>
+<h1 align="center" > BiliNote</h1>
 </div>
 
 <p align="center"><i>AI 视频笔记生成工具 让 AI 为你的视频做笔记</i></p>
 
 <p align="center">
+  <img src="https://img.shields.io/badge/fork-winlend%2FBiliNote-informational" />
+  <img src="https://img.shields.io/badge/base-JefferyHcool%2FBiliNote%20v2.4.4-lightgrey" />
   <img src="https://img.shields.io/badge/license-MIT-blue.svg" />
   <img src="https://img.shields.io/badge/frontend-react%2019-blue" />
   <img src="https://img.shields.io/badge/backend-fastapi-green" />
   <img src="https://img.shields.io/badge/GPT-openai%20%7C%20deepseek%20%7C%20qwen-ff69b4" />
   <img src="https://img.shields.io/badge/docker-ghcr.io-blue" />
   <img src="https://img.shields.io/badge/status-active-success" />
-  <img src="https://img.shields.io/github/stars/jefferyhcool/BiliNote?style=social" />
 </p>
 
+> **本仓库说明（[winlend/BiliNote](https://github.com/winlend/BiliNote)）**  
+> 基于上游开源项目 [JefferyHcool/BiliNote](https://github.com/JefferyHcool/BiliNote)（v2.4.4）的 **个人维护 Fork**，在桌面端体验、Windows 打包、Groq 转写、抖音解析、导出与 AI 问答索引等方面做了修复与增强。  
+> **默认分支：`master`**（已集成下列改进）。上游官方仓库 **不会** 被本 Fork 直接推送修改。  
+> 详细变更见下文 [本 Fork 改进](#-本-fork-改进winlend) 与 [Windows 一键打包](#-windows-一键打包本-fork)。
+
 <p align="center">
-  <a href="https://www.bilinote.app/"><b>🚀 BiliNote Pro · 在线版</b></a>
+  <a href="https://www.bilinote.app/"><b>🚀 BiliNote Pro · 在线版（上游官方产品）</b></a>
 </p>
 
 <p align="center">
@@ -34,7 +40,36 @@
   </a>
 </p>
 
+## 🔀 本 Fork 改进（winlend）
 
+相对上游 v2.4.4，本仓库 `master` 主要包含：
+
+### 稳定性与转写
+
+- **Groq 音频转写**：补全默认转写模型（如 `whisper-large-v3-turbo`），避免 `` `model` is a required property ``；转写模型可在「音频转写配置」中设置
+- **抖音下载**：改用 `iesdouyin.com` 分享页 SSR（`_ROUTER_DATA`），规避空 body 导致的 `JSONDecodeError`（对齐社区 issue 方案）
+- **FFmpeg 探测缓存**：健康检查不再反复刷「ffmpeg 已安装」日志
+- **笔记失败日志**：任务异常写入 `app.log`，状态带 `message` / `failed_at` / `cache`
+- **可选「测转写」**：供应商页除 Chat 连通性外，可测 `audio.transcriptions`（与 Chat 测试分离）
+
+### 生成体验
+
+- **进度**：步骤计时、分步说明、后端实时 `statusMessage`；GPT 长文分块进度回调（第 i/n 段）
+- **失败页**：保留步骤条、展示真实错误、设置引导、「继续（复用缓存）」/「清空后重跑」
+- **复制 / 导出下拉**：主按钮默认仅笔记；可选笔记 / 原文转写 / 笔记+原文附录
+- **导出 Markdown**：后端落盘到笔记目录（解决 Tauri WebView 下 `a[download]` 无反应），并尽量打开目录
+
+### AI 问答与数据目录
+
+- **向量索引**：失败原因回传前端；首次 Embedding 下载提示；侧栏与 **设置 → AI 问答/索引** 可强制重新索引
+- **ChromaDB 桌面打包**：补 `posthog` 等 hidden-import / collect-all；导入失败时 stub 遥测模块
+- **数据与存储**：可配置笔记 / 下载 / 向量库 / FFmpeg；**默认可写则用安装目录（CWD）**，不可写再回退用户目录；可选「推荐可写目录」
+
+### Windows 打包
+
+- 根目录 `publish.ps1`（推荐）与 ASCII 安全的 `publish.bat`、`backend/build.bat`，避免中文 Windows `cmd` 编码把脚本拆碎
+
+> 官方桌面安装包请仍从 [JefferyHcool/BiliNote Releases](https://github.com/JefferyHcool/BiliNote/releases) 获取；本 Fork 需自行用下方脚本构建。
 
 ## ✨ 项目简介
 
@@ -48,10 +83,47 @@ BiliNote 是一个开源的 AI 视频笔记助手，支持通过哔哩哔哩、Y
 
 ## 📝 使用文档
 详细文档可以查看[这里](https://docs.bilinote.app/)
-## 📦 桌面版下载
-本项目提供了 Windows 和 macOS 桌面客户端，可在 [Releases](https://github.com/JefferyHcool/BiliNote/releases) 页面下载最新版本。
 
-> Windows 用户请注意：一定要在没有中文路径的环境下运行。
+## 📦 桌面版下载
+
+- **上游官方安装包**：[JefferyHcool/BiliNote Releases](https://github.com/JefferyHcool/BiliNote/releases)
+- **本 Fork**：请使用下方 [Windows 一键打包](#-windows-一键打包本-fork) 自行构建（含本仓库全部修复）
+
+> Windows 用户请注意：尽量在 **无中文路径** 的环境下运行与打包。
+
+## 🖥 Windows 一键打包（本 Fork）
+
+环境：Windows x64、Rust（rustup）、Node 20+、pnpm 9、Python 3.11、PyInstaller。
+
+```powershell
+cd <本仓库根目录>
+git checkout master
+git pull origin master
+
+# 推荐 PowerShell（编码更稳）
+powershell -ExecutionPolicy Bypass -File .\publish.ps1
+# 指定版本号写入 tauri.conf.json：
+# powershell -ExecutionPolicy Bypass -File .\publish.ps1 -Version 2.5.0
+
+# 或 ASCII 版 bat
+# .\publish.bat
+# .\publish.bat 2.5.0
+```
+
+成功后安装包在 **`release-artifacts\`**（`.exe` / `.msi`）。
+
+可选：上传到 **本 Fork** 的 GitHub Release（不会推上游）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\publish.ps1 -Version 2.5.0 -Release
+```
+
+分支约定：
+
+| 远程 | 说明 |
+|------|------|
+| `origin` → `https://github.com/winlend/BiliNote.git` | 本 Fork；**`master` 为默认集成分支** |
+| `upstream` → `https://github.com/JefferyHcool/BiliNote.git` | 官方上游（只读同步用，勿 `push upstream`） |
 
 ## 💎 BiliNote AI笔记系统一对一搭建服务
 
