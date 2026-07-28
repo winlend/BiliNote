@@ -1,41 +1,10 @@
 import os
 import subprocess
-import sys
-from dotenv import load_dotenv
-
+from app.utils.env_loader import load_app_dotenv
 from app.utils.logger import get_logger
+
 logger = get_logger(__name__)
-
-
-def _load_dotenv_from_multiple_paths():
-    """尝试多个位置加载 .env，适配源码运行和 PyInstaller 打包场景。
-
-    PyInstaller 打包后当前工作目录是 EXE 所在目录，而源码运行时 .env
-    通常在项目根目录或 backend/ 同级。遍历常见候选路径确保能命中。
-    """
-    candidates = []
-    # 1. 当前工作目录（EXE 所在目录）
-    candidates.append(os.path.join(os.getcwd(), '.env'))
-    # 2. 本脚本所在目录（backend/）
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    candidates.append(os.path.join(script_dir, '.env'))
-    # 3. 项目根目录（backend/../.env）
-    candidates.append(os.path.join(script_dir, '..', '.env'))
-    # 4. PyInstaller 打包后的 _internal/ 子目录
-    if getattr(sys, 'frozen', False):
-        exe_dir = os.path.dirname(sys.executable)
-        candidates.append(os.path.join(exe_dir, '_internal', '.env'))
-
-    for path in candidates:
-        normalized = os.path.normpath(path)
-        if os.path.isfile(normalized):
-            load_dotenv(normalized)
-            return
-    # 都没找到，fallback 到默认行为（从 CWD 找）
-    load_dotenv()
-
-
-_load_dotenv_from_multiple_paths()
+load_app_dotenv()
 
 # 缓存探测结果：桌面端 /sys_health 每 5s 轮询一次，若每次都
 # 改 PATH + 跑 `ffmpeg -version` + 打 INFO，app.log 会被刷爆。

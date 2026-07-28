@@ -6,7 +6,7 @@ from typing import List, Optional, Tuple, Union, Any
 
 from fastapi import HTTPException
 from pydantic import HttpUrl
-from dotenv import load_dotenv
+from app.utils.env_loader import load_app_dotenv
 
 from app.downloaders.base import Downloader
 from app.downloaders.bilibili_downloader import BilibiliDownloader
@@ -39,8 +39,8 @@ from app.utils.video_reader import VideoReader
 
 # ------------------ 环境变量与全局配置 ------------------
 
-# 从 .env 文件中加载环境变量
-load_dotenv()
+# 多路径加载 .env（桌面打包 / 源码）
+load_app_dotenv()
 
 # 后端 API 地址与端口（若有需要可以在代码其他部分使用 BACKEND_BASE_URL）
 API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost")

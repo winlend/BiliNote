@@ -84,6 +84,11 @@ class PathConfigManager:
         out_dir = self.get_out_dir()
         ffmpeg = self.get_ffmpeg_bin_path()
         db_url = os.getenv("DATABASE_URL", "sqlite:///bili_note.db")
+        try:
+            from app.utils.env_loader import get_logs_dir
+            logs_dir = get_logs_dir()
+        except Exception:
+            logs_dir = str((Path.cwd() / "logs").resolve())
         return {
             "note_output_dir": data.get("note_output_dir") or "",
             "data_dir": data.get("data_dir") or "",
@@ -95,6 +100,7 @@ class PathConfigManager:
                 "out_dir": out_dir,
                 "ffmpeg_bin_path": ffmpeg,
                 "database_url": db_url,
+                "logs_dir": logs_dir,
                 "cwd": str(Path.cwd()),
             },
         }

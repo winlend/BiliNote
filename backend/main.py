@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.gzip import GZipMiddleware
 from starlette.staticfiles import StaticFiles
-from dotenv import load_dotenv
+from app.utils.env_loader import load_app_dotenv
 
 from app.db.init_db import init_db
 from app.db.provider_dao import seed_default_providers
@@ -18,8 +18,13 @@ from app import create_app
 from app.services.transcriber_config_manager import TranscriberConfigManager
 from events import register_handler
 
+# 必须在读任何 os.getenv 之前；多路径适配桌面打包
+_env_path = load_app_dotenv()
 logger = get_logger(__name__)
-load_dotenv()
+if _env_path:
+    logger.info(f"已加载环境变量文件: {_env_path}")
+else:
+    logger.info("未找到 .env 文件，使用进程环境变量与代码默认值")
 
 # 读取 .env 中的路径
 static_path = os.getenv('STATIC', '/static')

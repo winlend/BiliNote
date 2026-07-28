@@ -1,8 +1,10 @@
 import { useState, useEffect, useRef, useMemo, memo, FC } from 'react'
+import { useNavigate } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import { Button } from '@/components/ui/button.tsx'
 import { Copy, Download, ArrowRight, Play, ExternalLink } from 'lucide-react'
 import { toast } from 'react-hot-toast'
+import { getErrorGuides } from '@/lib/errorGuides'
 import Error from '@/components/Lottie/error.tsx'
 import Loading from '@/components/Lottie/Loading.tsx'
 import Idle from '@/components/Lottie/Idle.tsx'
@@ -363,6 +365,7 @@ const MarkdownViewer: FC<MarkdownViewerProps> = memo(({ status }) => {
   // 确保baseURL没有尾部斜杠
   const baseURL = (String(import.meta.env.VITE_API_BASE_URL || '').replace('/api','') || '').replace(/\/$/, '')
   const getCurrentTask = useTaskStore.getState().getCurrentTask
+  const navigate = useNavigate()
   const currentTask = useTaskStore(state => state.getCurrentTask())
   const taskStatus = currentTask?.status || 'PENDING'
   const retryTask = useTaskStore.getState().retryTask
@@ -530,6 +533,7 @@ const MarkdownViewer: FC<MarkdownViewerProps> = memo(({ status }) => {
       '请检查后台日志或稍后再试'
     const resume = cacheResumeHint(currentTask?.cache)
     const failedLabel = STEP_LABEL[failedStepKey] || failedStepKey
+    const guides = getErrorGuides(reason, failedStepKey)
 
     return (
       <div className="flex h-screen w-full flex-col items-center justify-center gap-4 px-6">
@@ -550,7 +554,32 @@ const MarkdownViewer: FC<MarkdownViewerProps> = memo(({ status }) => {
             {reason}
           </div>
           <p className="mt-3 text-xs text-neutral-500">{resume}</p>
-          <div className="mt-4 flex items-center justify-center gap-3">
+          {guides.length > 0 && (
+            <div className="mt-4 rounded-md border border-neutral-200 bg-neutral-50 px-3 py-3 text-left">
+              <p className="mb-2 text-xs font-medium text-neutral-700">建议处理</p>
+              <ul className="space-y-2">
+                {guides.map(g => (
+                  <li key={g.id} className="flex items-start justify-between gap-2 text-xs">
+                    <span className="text-neutral-600">
+                      <span className="font-medium text-neutral-800">{g.label}</span>
+                      {' — '}
+                      {g.hint}
+                    </span>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="shrink-0"
+                      onClick={() => navigate(g.path)}
+                    >
+                      前往
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          <div className="mt-4 flex flex-wrap items-center justify-center gap-3">
             <Button onClick={() => currentTask && retryTask(currentTask.id)} size="lg">
               重试
             </Button>

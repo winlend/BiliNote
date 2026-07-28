@@ -150,16 +150,14 @@ const ProviderForm = ({ isCreate = false }: { isCreate?: boolean }) => {
         return
       }
       setTesting(true)
-     await testConnection({
-             id
-          })
-
-        toast.success('测试连通性成功 🎉')
-
-    } catch (error) {
-
-      toast.error(`连接失败: ${data.data.msg || '未知错误'}`)
-      // toast.error('测试连通性异常')
+      await testConnection({
+        id,
+      })
+      // 仅验证 chat.completions；音频转写（如 Groq Whisper）需另配转写引擎/模型
+      toast.success('Chat 连通性成功（未测试音频转写）🎉')
+    } catch (error: any) {
+      const msg = error?.msg || error?.message || '未知错误'
+      toast.error(`连接失败: ${msg}`)
     } finally {
       setTesting(false)
     }
@@ -222,6 +220,14 @@ const ProviderForm = ({ isCreate = false }: { isCreate?: boolean }) => {
           <div className="text-lg font-bold">
             {isEditMode ? '编辑模型供应商' : '新增模型供应商'}
           </div>
+          <Alert className="text-sm">
+            <AlertTitle>关于「测试连通性」</AlertTitle>
+            <AlertDescription>
+              只发送一条最小化 <strong>Chat</strong> 请求，验证 API Key / Base URL / 已保存的对话模型。
+              <strong>不包含</strong>音频转写（ASR）。若用 Groq 做转写，请到「音频转写配置」选择
+              Groq 引擎与 Whisper 模型；Chat 成功不代表转写一定可用。
+            </AlertDescription>
+          </Alert>
           {!isBuiltIn && (
             <div className="text-sm text-red-500 italic">
               自定义模型供应商需要确保兼容 OpenAI SDK
@@ -263,7 +269,7 @@ const ProviderForm = ({ isCreate = false }: { isCreate?: boolean }) => {
                   <Input {...field} className="flex-1" />
                 </FormControl>
                 <Button type="button" onClick={handleTest} variant="ghost" disabled={testing}>
-                  {testing ? '测试中...' : '测试连通性'}
+                  {testing ? '测试中...' : '测试 Chat 连通性'}
                 </Button>
                 <FormMessage />
               </FormItem>

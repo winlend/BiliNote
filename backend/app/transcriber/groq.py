@@ -9,8 +9,8 @@ from app.utils.logger import get_logger
 from app.utils.openai_client import build_openai_client
 import ffmpeg
 import tempfile
-from dotenv import load_dotenv
-load_dotenv()
+from app.utils.env_loader import load_app_dotenv
+load_app_dotenv()
 
 logger = get_logger(__name__)
 MAX_SIZE_MB = 18

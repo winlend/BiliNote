@@ -158,6 +158,49 @@ def update_path_config(data: PathConfigRequest):
     return R.success(data=cfg, msg="路径已保存；新任务将使用新目录，旧文件不会自动迁移")
 
 
+class OpenFolderRequest(BaseModel):
+    """在资源管理器中打开本机目录（仅允许已知数据目录，防任意路径打开）。"""
+    which: str  # note_output_dir | data_dir | logs_dir | out_dir | cwd
+
+
+@router.post("/open_folder")
+def open_folder(data: OpenFolderRequest):
+    import subprocess
+    import sys as _sys
+
+    from app.services.path_config_manager import get_path_config_manager
+    from app.utils.env_loader import get_logs_dir
+
+    mgr = get_path_config_manager()
+    mapping = {
+        "note_output_dir": mgr.get_note_output_dir(),
+        "data_dir": mgr.get_data_dir(),
+        "out_dir": mgr.get_out_dir(),
+        "logs_dir": get_logs_dir(),
+        "cwd": str(Path.cwd().resolve()),
+    }
+    target = mapping.get(data.which)
+    if not target:
+        return R.error(msg=f"不支持的目录类型: {data.which}")
+    path = Path(target)
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        return R.error(msg=f"无法创建目录: {e}")
+    resolved = str(path.resolve())
+    try:
+        if _sys.platform == "win32":
+            os.startfile(resolved)  # type: ignore[attr-defined]
+        elif _sys.platform == "darwin":
+            subprocess.Popen(["open", resolved])
+        else:
+            subprocess.Popen(["xdg-open", resolved])
+    except Exception as e:
+        logger.warning(f"打开目录失败: {resolved} ({e})")
+        return R.error(msg=f"打开目录失败: {e}")
+    return R.success(data={"path": resolved}, msg="已打开目录")
+
+
 # ---- 全局代理配置（作用于 LLM API + 转写 API + yt-dlp 下载）----
 
 class ProxyConfigRequest(BaseModel):

@@ -5,15 +5,35 @@ import { Input } from '@/components/ui/input'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { FolderOpen, HardDrive, Loader2, Save, Info } from 'lucide-react'
 import { toast } from 'react-hot-toast'
-import { getPathConfig, updatePathConfig, PathConfig } from '@/services/paths'
+import {
+  getPathConfig,
+  updatePathConfig,
+  openFolder,
+  PathConfig,
+  OpenFolderWhich,
+} from '@/services/paths'
 
 export default function Storage() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [opening, setOpening] = useState<string | null>(null)
   const [config, setConfig] = useState<PathConfig | null>(null)
   const [noteDir, setNoteDir] = useState('')
   const [dataDir, setDataDir] = useState('')
   const [ffmpegDir, setFfmpegDir] = useState('')
+
+  const handleOpen = async (which: OpenFolderWhich) => {
+    setOpening(which)
+    try {
+      const res = await openFolder(which)
+      toast.success(`已打开：${res?.path || which}`)
+    } catch (e: any) {
+      if (e?.msg) toast.error(e.msg)
+      else toast.error('打开目录失败')
+    } finally {
+      setOpening(null)
+    }
+  }
 
   const load = useCallback(async () => {
     try {
@@ -88,7 +108,19 @@ export default function Storage() {
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="space-y-2">
-            <label className="text-sm font-medium">笔记与任务缓存目录</label>
+            <div className="flex items-center justify-between gap-2">
+              <label className="text-sm font-medium">笔记与任务缓存目录</label>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={opening === 'note_output_dir'}
+                onClick={() => handleOpen('note_output_dir')}
+              >
+                <FolderOpen className="mr-1 h-3.5 w-3.5" />
+                {opening === 'note_output_dir' ? '打开中…' : '打开目录'}
+              </Button>
+            </div>
             <Input
               value={noteDir}
               onChange={e => setNoteDir(e.target.value)}
@@ -103,7 +135,19 @@ export default function Storage() {
           </div>
 
           <div className="space-y-2">
-            <label className="text-sm font-medium">下载缓存目录</label>
+            <div className="flex items-center justify-between gap-2">
+              <label className="text-sm font-medium">下载缓存目录</label>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={opening === 'data_dir'}
+                onClick={() => handleOpen('data_dir')}
+              >
+                <FolderOpen className="mr-1 h-3.5 w-3.5" />
+                {opening === 'data_dir' ? '打开中…' : '打开目录'}
+              </Button>
+            </div>
             <Input
               value={dataDir}
               onChange={e => setDataDir(e.target.value)}
@@ -150,12 +194,43 @@ export default function Storage() {
             只读信息
           </CardTitle>
         </CardHeader>
-        <CardContent className="space-y-2 text-sm text-neutral-600">
-          <div>
-            <span className="font-medium">后端工作目录 (CWD)：</span>
-            <code className="ml-1 break-all rounded bg-neutral-100 px-1 text-xs">
-              {config?.effective?.cwd}
-            </code>
+        <CardContent className="space-y-3 text-sm text-neutral-600">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <span className="font-medium">日志目录：</span>
+              <code className="ml-1 break-all rounded bg-neutral-100 px-1 text-xs">
+                {config?.effective?.logs_dir || '(logs)'}
+              </code>
+              <span className="ml-2 text-xs text-neutral-400">app.log 在此</span>
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={opening === 'logs_dir'}
+              onClick={() => handleOpen('logs_dir')}
+            >
+              <FolderOpen className="mr-1 h-3.5 w-3.5" />
+              {opening === 'logs_dir' ? '打开中…' : '打开日志目录'}
+            </Button>
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <span className="font-medium">后端工作目录 (CWD)：</span>
+              <code className="ml-1 break-all rounded bg-neutral-100 px-1 text-xs">
+                {config?.effective?.cwd}
+              </code>
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={opening === 'cwd'}
+              onClick={() => handleOpen('cwd')}
+            >
+              <FolderOpen className="mr-1 h-3.5 w-3.5" />
+              打开
+            </Button>
           </div>
           <div>
             <span className="font-medium">数据库：</span>

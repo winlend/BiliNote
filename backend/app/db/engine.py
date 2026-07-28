@@ -1,9 +1,9 @@
 import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
-from dotenv import load_dotenv
+from app.utils.env_loader import load_app_dotenv
 
-load_dotenv()
+load_app_dotenv()
 
 # 默认 SQLite，如果想换 PostgreSQL 或 MySQL，可以直接改 .env
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///bili_note.db")
