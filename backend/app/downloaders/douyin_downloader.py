@@ -8,6 +8,15 @@
 修复方案（对齐 issue #162 评论 https://github.com/JefferyHcool/BiliNote/issues/162#issuecomment-4333005118）：
 改用 iesdouyin.com/share/video/{id}/ 分享页。该页服务端渲染，把作品数据内嵌在
 window._ROUTER_DATA / RENDER_DATA 中，无需 a_bogus、无需 Cookie。
+
+两个补充（实测所得，见 tests/test_douyin_share_ssr.py）：
+
+1. 作品 id 不一定在路径上。网页版「弹窗打开作品」的链接形如
+   https://www.douyin.com/user/self?...&modal_id=<aweme_id>&showTab=favorite_collection，
+   收藏夹 / 合集 / 用户主页 / 搜索页点开单个作品都是这个形态，必须从查询参数取 id。
+2. 分享页 SSR 是概率性的：同一个 URL 有时只吐 ~32KB 空骨架（videoInfoRes.item_list
+   为空），过一两秒再请求就正常。share/video 与 share/note 两个入口对同一个视频作品
+   都能出完整数据，所以交替重试 + 递增退避 + 轮换移动 UA 即可稳定命中。
 """
 from __future__ import annotations
 
@@ -15,6 +24,7 @@ import json
 import os
 import re
 import subprocess
+import time
 import urllib.parse
 from abc import ABC
 from typing import Any, Dict, List, Optional, Union
@@ -30,9 +40,49 @@ from app.utils.path_helper import get_data_dir
 logger = get_logger(__name__)
 
 DOUYIN_SHORT_URL = re.compile(r"https?://v\.douyin\.com/[\w\-]+/?", re.I)
-DOUYIN_LONG_URL = re.compile(r"https?://(?:www\.)?douyin\.com/(?:video|note)/(\d+)", re.I)
+DOUYIN_LONG_URL = re.compile(
+    r"https?://(?:www\.)?douyin\.com/(?:video|note|share/(?:video|note))/(\d+)", re.I
+)
 IESDOUYIN_URL = re.compile(r"https?://(?:www\.)?iesdouyin\.com/share/(?:video|note)/(\d+)", re.I)
 URL_IN_TEXT = re.compile(r"https?://[^\s<>\"']+")
+
+# 网页版"在弹窗里打开作品"的链接不把 id 放在路径上，而是挂在查询参数里，例如
+# https://www.douyin.com/user/self?modal_id=7695269189719772450&showTab=favorite_collection
+# 收藏夹 / 用户主页 / 搜索页 / 频道页点开单个作品时都是这种形态，必须按参数取 id。
+DOUYIN_ID_PARAM_KEYS = (
+    "modal_id",
+    "modalId",
+    "aweme_id",
+    "awemeId",
+    "item_id",
+    "itemId",
+    "group_id",
+    "vid",
+)
+
+
+def _id_from_query(link: str) -> str:
+    """从链接查询参数里取作品 id（modal_id 等），取不到返回空串。"""
+    try:
+        query = urllib.parse.urlparse(link).query
+    except ValueError:
+        return ""
+    if not query:
+        return ""
+    params = urllib.parse.parse_qs(query, keep_blank_values=False)
+    for key in DOUYIN_ID_PARAM_KEYS:
+        for value in params.get(key, []):
+            value = (value or "").strip()
+            if value.isdigit() and len(value) >= 15:
+                return value
+    # 兜底：任意参数值形如 aweme_id（长数字）
+    for values in params.values():
+        for value in values:
+            value = (value or "").strip()
+            if value.isdigit() and 18 <= len(value) <= 20:
+                return value
+    return ""
+
 
 # 桌面 UA：解析短链重定向
 DESKTOP_HEADERS = {
@@ -57,6 +107,26 @@ MOBILE_HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
 }
+
+# 分享页 SSR 是概率性的：抖音会随机只吐 ~32KB 的空骨架（loaderData 里 video_layout
+# 为 null、videoInfoRes.item_list 为空），过一两秒同样的 URL 又会有完整数据。
+# 换 UA + 交替 video/note 模板 + 递增退避，是命中完整 SSR 最省事的组合。
+MOBILE_UA_POOL = (
+    MOBILE_HEADERS["User-Agent"],
+    (
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) "
+        "AppleWebKit/605.1.15 (KHTML, like Gecko) "
+        "Version/17.2 Mobile/15E148 Safari/604.1"
+    ),
+    (
+        "Mozilla/5.0 (Linux; Android 13; SM-S9110) AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/131.0.0.0 Mobile Safari/537.36"
+    ),
+    (
+        "Mozilla/5.0 (Linux; Android 12; Pixel 6) AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/128.0.0.0 Mobile Safari/537.36"
+    ),
+)
 
 
 def _first_url(node: Any) -> str:
@@ -253,13 +323,30 @@ class DouyinDownloader(Downloader, ABC):
         super().__init__()
         self.session = requests.Session()
         self.session.headers.update(DESKTOP_HEADERS)
+        self.cookie = cookie if cookie is not None else self._load_cookie()
+        if self.cookie:
+            self.session.headers["Cookie"] = self.cookie
+            logger.info("已注入抖音 Cookie（分享页/风控页更稳）")
+        else:
+            logger.info("抖音 Cookie 未配置；分享页偶发风控时会自动重试")
+
+    @staticmethod
+    def _load_cookie() -> str:
+        """从「下载配置」读抖音 cookie，读不到返回空串。"""
+        try:
+            from app.services.cookie_manager import CookieConfigManager
+
+            return (CookieConfigManager().get("douyin") or "").strip()
+        except Exception as e:  # 配置层异常不能拖垮下载
+            logger.warning(f"读取抖音 Cookie 失败: {e}")
+            return ""
 
     @staticmethod
     def find_url(string: str) -> list:
         return URL_IN_TEXT.findall(string or "")
 
     def extract_video_id(self, url: str) -> str:
-        """从分享文案 / 短链 / 长链中解析 aweme_id。"""
+        """从分享文案 / 短链 / 长链 / 网页版弹窗链接中解析 aweme_id。"""
         text = (url or "").strip()
         if not text:
             return ""
@@ -273,6 +360,14 @@ class DouyinDownloader(Downloader, ABC):
         candidates = self.find_url(text)
         if not candidates and text.startswith("http"):
             candidates = [text]
+
+        # 网页版弹窗形态：作品 id 只在 modal_id 之类的查询参数里
+        for link in candidates:
+            query_id = _id_from_query(link)
+            if query_id:
+                logger.info(f"抖音作品 id 取自查询参数: id={query_id}")
+                return query_id
+
         # 优先短链
         ordered = sorted(
             candidates,
@@ -293,6 +388,9 @@ class DouyinDownloader(Downloader, ABC):
                     mm = pattern.search(final)
                     if mm:
                         return mm.group(1)
+                resolved_id = _id_from_query(final)
+                if resolved_id:
+                    return resolved_id
                 # 有时仍停在短链页，再扫 Location 链
                 for pattern in (DOUYIN_LONG_URL, IESDOUYIN_URL):
                     mm = pattern.search(resp.text or "")
@@ -308,47 +406,78 @@ class DouyinDownloader(Downloader, ABC):
                     return mm.group(1)
         return ""
 
-    def fetch_video_info(self, video_url: str) -> dict:
-        """拉取作品详情，返回兼容旧字段的包装：{"aweme_detail": {...}}。"""
-        aweme_id = self.extract_video_id(video_url)
-        if not aweme_id:
-            raise ValueError("无法从链接中提取抖音视频 ID，请检查链接是否有效")
+    def _fetch_share_page(self, kind: str, aweme_id: str, ua: str):
+        """单次抓取 iesdouyin 分享页，返回 (aweme, error)。
 
-        share_url = f"https://www.iesdouyin.com/share/video/{aweme_id}/"
-        logger.info(f"抖音分享页解析: id={aweme_id}, url={share_url}")
+        share/video 与 share/note 是同一套 SSR 的两个入口，对同一个视频作品都能出数据；
+        抖音会随机只返回 ~32KB 空骨架（videoInfoRes.item_list 为空），这时换入口再试。
+        """
+        url = f"https://www.iesdouyin.com/share/{kind}/{aweme_id}/"
+        headers = {**MOBILE_HEADERS, "User-Agent": ua}
+        logger.info(f"抖音分享页请求: id={aweme_id}, 模板={kind}")
         try:
-            resp = self.session.get(
-                share_url,
-                headers=MOBILE_HEADERS,
-                timeout=30,
-                allow_redirects=True,
-            )
+            resp = self.session.get(url, headers=headers, timeout=30, allow_redirects=True)
         except requests.RequestException as e:
-            raise ValueError(f"请求抖音分享页失败: {e}") from e
+            return {}, f"{url} 请求失败: {e}"
 
         if resp.status_code != 200:
-            raise ValueError(f"抖音分享页 HTTP {resp.status_code}，视频可能不存在或需登录")
+            return {}, f"{url} 返回 HTTP {resp.status_code}"
 
         html = resp.text or ""
         if not html.strip():
-            raise ValueError("抖音分享页返回空内容")
+            return {}, f"{url} 返回空内容"
 
         render_data = _parse_render_data(html)
         if not render_data:
-            raise ValueError(
-                "无法解析抖音页面数据（缺少 _ROUTER_DATA/RENDER_DATA）。"
-                "抖音可能已改版，或当前网络被拦截。"
-            )
+            return {}, f"{url} 缺少 _ROUTER_DATA/RENDER_DATA（HTML {len(html)}B）"
 
         aweme = _find_aweme_detail(render_data)
         if not aweme:
-            raise ValueError("无法提取作品信息，视频可能为私密、已删除或页面结构变更")
+            return {}, f"{url} 空骨架无作品数据（HTML {len(html)}B）"
 
         # 补齐 id
         if not aweme.get("aweme_id"):
             aweme["aweme_id"] = aweme.get("awemeId") or aweme_id
+        return aweme, ""
 
-        return {"aweme_detail": aweme}
+    def fetch_video_info(self, video_url: str) -> dict:
+        """拉取作品详情，返回兼容旧字段的包装：{"aweme_detail": {...}}。"""
+        aweme_id = self.extract_video_id(video_url)
+        if not aweme_id:
+            raise ValueError(
+                "无法从链接中提取抖音视频 ID。"
+                "支持 https://www.douyin.com/video/<id>、"
+                "https://v.douyin.com/<短码>/，"
+                "以及网页版弹窗链接中的 modal_id 参数"
+                "（如 https://www.douyin.com/user/self?...&modal_id=<id>&showTab=...）。"
+                "请确认链接里带的是单个作品的 id。"
+            )
+
+        errors: List[str] = []
+        rounds = 3
+        for round_idx in range(rounds):
+            if round_idx:
+                # 空骨架通常一两秒后恢复，退避逐轮拉长
+                time.sleep(1.0 + round_idx * 1.2)
+            for kind in ("video", "note"):
+                ua = MOBILE_UA_POOL[(round_idx + (kind == "note")) % len(MOBILE_UA_POOL)]
+                aweme, error = self._fetch_share_page(kind, aweme_id, ua)
+                if aweme:
+                    aweme_type = aweme.get("aweme_type", aweme.get("awemeType"))
+                    logger.info(
+                        f"抖音作品解析成功: id={aweme_id}, 模板={kind}, aweme_type={aweme_type}"
+                    )
+                    return {"aweme_detail": aweme}
+                errors.append(error)
+                time.sleep(0.4)
+
+        detail = "；".join(errors[-3:]) if errors else "无响应数据"
+        raise ValueError(
+            f"抖音作品解析失败（id={aweme_id}，已尝试 {rounds * 2} 次）：{detail}。"
+            "常见原因：作品已删除/私密、链接指向的是收藏夹或合集列表而非单个作品、"
+            "连续请求被抖音软风控、或当前网络访问不了 iesdouyin.com。"
+            "可稍后重试，或在「设置 → 下载配置」里填入抖音 cookie 后重试。"
+        )
 
     def _resolve_output_dir(self, output_dir: Optional[str]) -> str:
         if output_dir:

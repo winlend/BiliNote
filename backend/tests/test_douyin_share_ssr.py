@@ -92,3 +92,39 @@ def test_extract_video_id_from_long_url():
         "看看这个 https://www.iesdouyin.com/share/video/7987654321098765432/ 复制打开抖音"
     )
     assert vid2 == "7987654321098765432"
+
+
+def test_extract_video_id_from_modal_id():
+    """网页版弹窗链接：id 只在 modal_id 查询参数里，路径是 /user/self。"""
+    dy = DouyinDownloader()
+    url = (
+        "https://www.douyin.com/user/self?from_tab_name=main"
+        "&modal_id=7695269189719772450&showTab=favorite_collection"
+    )
+    assert dy.extract_video_id(url) == "7695269189719772450"
+
+
+def test_extract_video_id_from_other_query_forms():
+    dy = DouyinDownloader()
+    assert dy.extract_video_id("https://www.douyin.com/discover?modal_id=7412345678901234567") == \
+        "7412345678901234567"
+    assert dy.extract_video_id("https://www.douyin.com/user/MS4wLjAB?aweme_id=7312345678901234567") == \
+        "7312345678901234567"
+    assert dy.extract_video_id("https://www.douyin.com/share/video/7212345678901234567") == \
+        "7212345678901234567"
+
+
+def test_extract_video_id_ignores_bad_links():
+    dy = DouyinDownloader()
+    # 没有作品 id 的列表页
+    assert dy.extract_video_id("https://www.douyin.com/user/self?showTab=favorite_collection") == ""
+    assert dy.extract_video_id("") == ""
+
+
+def test_url_parser_douyin_modal_id():
+    from app.utils.url_parser import extract_video_id
+
+    url = "https://www.douyin.com/user/self?from_tab_name=main&modal_id=7695269189719772450"
+    assert extract_video_id(url, "douyin") == "7695269189719772450"
+    assert extract_video_id("https://www.douyin.com/video/7123456789012345678", "douyin") == \
+        "7123456789012345678"

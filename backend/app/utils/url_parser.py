@@ -1,5 +1,6 @@
 import re
 from typing import Optional
+from urllib.parse import parse_qs, urlparse
 import requests
 
 
@@ -28,9 +29,17 @@ def extract_video_id(url: str, platform: str) -> Optional[str]:
         return match.group(1) if match else None
 
     elif platform == "douyin":
-        # 匹配 douyin.com/video/1234567890123456789
-        match = re.search(r"/video/(\d+)", url)
-        return match.group(1) if match else None
+        # 匹配 douyin.com/video/1234567890123456789、douyin.com/note/...
+        match = re.search(r"/(?:video|note|share/(?:video|note))/(\d+)", url)
+        if match:
+            return match.group(1)
+        # 网页版弹窗/收藏夹/用户主页打开作品：id 在 modal_id 等查询参数里
+        params = parse_qs(urlparse(url).query)
+        for key in ("modal_id", "modalId", "aweme_id", "awemeId", "item_id", "itemId", "vid"):
+            for value in params.get(key, []):
+                if value and value.isdigit():
+                    return value
+        return None
 
     return None
 
