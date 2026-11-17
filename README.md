@@ -81,6 +81,10 @@ BiliNote 是一个开源的 AI 视频笔记助手，支持通过哔哩哔哩、Y
 
 直接访问 **[www.bilinote.app](https://www.bilinote.app/)** 即可使用 BiliNote Pro 在线版，无需本地部署。
 
+## 💼 企业AI落地咨询服务
+
+帮助团队将开源能力转化为商业价值。免费15分钟诊断 → 加微信 JefferyHJW
+
 ## 📝 使用文档
 详细文档可以查看[这里](https://docs.bilinote.app/)
 
