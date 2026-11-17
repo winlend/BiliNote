@@ -87,9 +87,18 @@ jobs:
         working-directory: BillNote_frontend
         shell: bash
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          echo "Injecting version $VERSION into tauri.conf.json"
-          node -e "const f='src-tauri/tauri.conf.json'; const fs=require('fs'); const j=JSON.parse(fs.readFileSync(f,'utf8')); j.version=process.argv[1]; fs.writeFileSync(f, JSON.stringify(j,null,2)+'\n');" "$VERSION"
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          # Windows 的 MSI(WiX) 只接受纯数字的 x.y.z 或纯数字预发布段，否则打包直接失败：
+          #   failed to bundle project `optional pre-release identifier in app version
+          #   must be numeric-only and cannot be greater than 65535 for msi target`
+          # 所以 v2.4.6-fork.1 这类 tag 必须先把 -fork.1 剥掉再写进 bundle 版本，
+          # 否则 macOS(dmg 允许任意 CFBundleShortVersionString) 绿、Windows 红。
+          BUNDLE_VERSION="${TAG_VERSION%%-*}"
+          if [ "$BUNDLE_VERSION" != "$TAG_VERSION" ]; then
+            echo "Tag version $TAG_VERSION has a non-numeric pre-release segment; bundling as $BUNDLE_VERSION"
+          fi
+          echo "Injecting version $BUNDLE_VERSION into tauri.conf.json"
+          node -e "const f='src-tauri/tauri.conf.json'; const fs=require('fs'); const j=JSON.parse(fs.readFileSync(f,'utf8')); j.version=process.argv[1]; fs.writeFileSync(f, JSON.stringify(j,null,2)+'\n');" "$BUNDLE_VERSION"
           node -e "console.log('tauri.conf.json version =', require('./src-tauri/tauri.conf.json').version)"
 
       # 打包 Tauri 应用
