@@ -9,6 +9,9 @@ on:
 jobs:
   build:
     strategy:
+      # 一个平台失败时不要把另一个平台正在跑的 job 取消掉（默认 fail-fast: true 会）。
+      # 曾经出现过 macOS 偶发失败、Windows 被连带 cancelled，结果一个安装包都没产出。
+      fail-fast: false
       matrix:
         include:
           - platform: macos-latest
@@ -141,7 +144,9 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    # 只要发布了 tag 就尝试发布：任一平台失败时，仍把成功平台打出来的安装包挂上去，
+    # 不要因为一个平台红就把整轮 30 分钟的构建成果全丢掉。
+    if: always() && startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
 
@@ -149,17 +154,17 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # 下载所有平台的构建产物
+      # 下载所有平台的构建产物（用 pattern 只拉存在的那些）
       - name: Download all artifacts
+        continue-on-error: true
         uses: actions/download-artifact@v4
         with:
           path: all-artifacts
+          pattern: artifacts-*
           merge-multiple: true
 
       - name: List all artifacts
-        run: |
-          echo "=== All release artifacts ==="
-          ls -lhR all-artifacts/
+        run: ls -lhR all-artifacts/ || echo "no artifacts were produced"
 
       # 创建 Release 并上传产物
       - name: Create GitHub Release
