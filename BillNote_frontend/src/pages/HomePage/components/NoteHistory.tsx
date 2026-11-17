@@ -40,26 +40,44 @@ const NoteHistory: FC<NoteHistoryProps> = ({ onSelect, selectedId }) => {
   const [search, setSearch] = useState('')
 
   // 服务端历史：本地 IndexedDB 之外的历史（换设备/浏览器、脚本发起的任务）
+  const SERVER_PAGE_SIZE = 20
   const [serverItems, setServerItems] = useState<ServerTaskItem[]>([])
   const [serverTotal, setServerTotal] = useState(0)
+  const [serverOffset, setServerOffset] = useState(0)
+  const [serverHasMore, setServerHasMore] = useState(false)
   const [serverLoading, setServerLoading] = useState(false)
 
-  const loadServerHistory = useCallback(async () => {
-    setServerLoading(true)
-    try {
-      const res: any = await get_task_history({ limit: 50 })
-      setServerItems(res?.items ?? [])
-      setServerTotal(res?.total ?? 0)
-    } catch (e) {
-      console.error('拉取服务端历史失败', e)
-    } finally {
-      setServerLoading(false)
-    }
-  }, [])
+  const loadServerHistory = useCallback(
+    async (reset = true) => {
+      if (serverLoading) return
+      setServerLoading(true)
+      const offset = reset ? 0 : serverOffset
+      try {
+        const res: any = await get_task_history({
+          limit: SERVER_PAGE_SIZE,
+          offset,
+        })
+        const items: ServerTaskItem[] = res?.items ?? []
+        const total = res?.total ?? 0
+        setServerItems(prev => (reset ? items : [...prev, ...items]))
+        setServerTotal(total)
+        const nextOffset = offset + items.length
+        setServerOffset(nextOffset)
+        setServerHasMore(nextOffset < total && items.length > 0)
+      } catch (e) {
+        console.error('拉取服务端历史失败', e)
+      } finally {
+        setServerLoading(false)
+      }
+    },
+    [serverLoading, serverOffset]
+  )
 
   useEffect(() => {
-    loadServerHistory()
-  }, [loadServerHistory])
+    loadServerHistory(true)
+    // 只在挂载时拉第一页；后续由「刷新」「加载更多」显式触发
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const fuse = useMemo(
     () =>
@@ -232,7 +250,7 @@ const NoteHistory: FC<NoteHistoryProps> = ({ onSelect, selectedId }) => {
                   type="button"
                   size="small"
                   variant="ghost"
-                  onClick={loadServerHistory}
+                  onClick={() => loadServerHistory(true)}
                   disabled={serverLoading}
                 >
                   <RefreshCw className={cn('h-3.5 w-3.5', serverLoading && 'animate-spin')} />
@@ -276,6 +294,25 @@ const NoteHistory: FC<NoteHistoryProps> = ({ onSelect, selectedId }) => {
                 </div>
               </div>
             ))}
+
+            {serverHasMore ? (
+              <Button
+                type="button"
+                size="small"
+                variant="ghost"
+                onClick={() => loadServerHistory(false)}
+                disabled={serverLoading}
+                className="mt-1 w-full text-[11px] text-neutral-500"
+              >
+                {serverLoading
+                  ? '加载中…'
+                  : `加载更多（已显示 ${serverItems.length} / 共 ${serverTotal} 条）`}
+              </Button>
+            ) : (
+              <p className="mt-1 text-center text-[10px] text-neutral-400">
+                共 {serverTotal} 条，已全部显示
+              </p>
+            )}
           </div>
         )}
       </div>
