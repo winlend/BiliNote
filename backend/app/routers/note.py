@@ -360,6 +360,75 @@ def export_markdown(data: ExportMarkdownRequest):
     )
 
 
+@router.get("/task_history")
+def get_task_history(limit: int = 50, offset: int = 0, platform: Optional[str] = None):
+    """任务历史列表（服务端持久化）。
+
+    前端原先只把任务存在浏览器 IndexedDB，换设备/换浏览器就看不到历史，由脚本或
+    API 发起的任务更不会出现在界面上。这里以 video_tasks 表为骨架、note_results
+    里的 status/result 文件补元数据，返回一个可直接渲染的列表（按 created_at 倒序）。
+
+    正文（markdown/transcript）不在列表里返回，前端点开时再调 /task_status/{id}，
+    避免一次拉几十篇正文。
+    """
+    from app.db.video_task_dao import list_video_tasks
+
+    out = _note_output_dir()
+    total, rows = list_video_tasks(limit=limit, offset=offset, platform=platform)
+
+    items = []
+    for row in rows:
+        task_id = row["task_id"]
+        status_path = os.path.join(out, f"{task_id}.status.json")
+        result_path = os.path.join(out, f"{task_id}.json")
+
+        status = None
+        message = ""
+        if os.path.exists(status_path):
+            try:
+                with open(status_path, "r", encoding="utf-8") as f:
+                    status_content = json.load(f)
+                status = status_content.get("status")
+                message = status_content.get("message") or ""
+            except (json.JSONDecodeError, OSError) as e:
+                logger.warning(f"读取任务状态失败 {task_id}: {e}")
+
+        title = ""
+        duration = 0.0
+        cover_url = ""
+        has_markdown = False
+        if os.path.exists(result_path):
+            try:
+                with open(result_path, "r", encoding="utf-8") as f:
+                    result = json.load(f)
+                audio = result.get("audio_meta") or {}
+                title = str(audio.get("title") or "")[:120]
+                duration = audio.get("duration") or 0
+                cover_url = audio.get("cover_url") or ""
+                has_markdown = bool(result.get("markdown"))
+                if status is None:
+                    status = TaskStatus.SUCCESS.value
+            except (json.JSONDecodeError, OSError) as e:
+                logger.warning(f"读取任务结果失败 {task_id}: {e}")
+
+        items.append({
+            **row,
+            "status": status,
+            "message": message,
+            "title": title,
+            "duration": duration,
+            "cover_url": cover_url,
+            "has_markdown": has_markdown,
+        })
+
+    return R.success({
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "items": items,
+    })
+
+
 @router.get("/task_status/{task_id}")
 def get_task_status(task_id: str):
     out = _note_output_dir()

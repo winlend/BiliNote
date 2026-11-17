@@ -70,6 +70,35 @@ export const get_task_status = async (task_id: string) => {
   }
 }
 
+/** 服务端任务历史里的一条（不含正文，正文点开时再拉 task_status） */
+export interface ServerTaskItem {
+  task_id: string
+  video_id: string
+  platform: string
+  created_at: string | null
+  status: string | null
+  message?: string
+  title?: string
+  duration?: number
+  cover_url?: string
+  has_markdown?: boolean
+}
+
+/**
+ * 服务端任务历史（video_tasks 表 + note_results 元数据）。
+ *
+ * 与浏览器 IndexedDB 里的本地历史互补：本地历史只有「这台机器这个浏览器点过生成」
+ * 的任务，换设备或由脚本/API 发起的任务只能从这里看到。顺序由后端保证
+ * （created_at 倒序），前端不要再排序。
+ */
+export const get_task_history = async (params?: {
+  limit?: number
+  offset?: number
+  platform?: string
+}): Promise<{ total: number; limit: number; offset: number; items: ServerTaskItem[] }> => {
+  return await request.get('/task_history', { params, suppressToast: true })
+}
+
 /** 清空任务管线缓存（audio/transcript/markdown/gpt checkpoint），不清媒体文件 */
 export const clearTaskCache = async (task_id: string) => {
   return await request.post(`/task_cache/clear/${task_id}`)

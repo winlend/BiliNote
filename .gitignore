@@ -336,3 +336,6 @@ ffmpg*/
 /config/
 # 桌面端打包产物（main.yml 在 CI 里生成，本地不入库）
 /release-artifacts/
+
+# pnpm 本地 store（--store-dir .pnpm-store 时产生）
+/BillNote_frontend/.pnpm-store/

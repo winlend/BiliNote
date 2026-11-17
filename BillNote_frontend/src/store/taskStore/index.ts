@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
-import { delete_task, generateNote, clearTaskCache } from '@/services/note.ts'
+import { delete_task, generateNote, clearTaskCache, get_task_status } from '@/services/note.ts'
+import type { ServerTaskItem } from '@/services/note.ts'
 import { v4 as uuidv4 } from 'uuid'
 import toast from 'react-hot-toast'
 import { get, set, del } from 'idb-keyval'
@@ -92,6 +93,12 @@ interface TaskStore {
   setCurrentTask: (taskId: string | null) => void
   getCurrentTask: () => Task | null
   retryTask: (id: string, payload?: any, options?: { clearCache?: boolean }) => void
+  /**
+   * 把服务端历史里的一条任务加载进本地 store 并选中。
+   * 本地没有（换了设备/浏览器，或任务是脚本发起的）时才会去后端拉正文；
+   * 已经在本地且有 markdown 的直接选中，不重复请求。
+   */
+  ensureServerTask: (item: ServerTaskItem) => Promise<void>
 }
 
 export const useTaskStore = create<TaskStore>()(
@@ -278,6 +285,64 @@ export const useTaskStore = create<TaskStore>()(
       clearTasks: () => set({ tasks: [], currentTaskId: null }),
 
       setCurrentTask: taskId => set({ currentTaskId: taskId }),
+
+      ensureServerTask: async (item: ServerTaskItem) => {
+        const existing = get().tasks.find(t => t.id === item.task_id)
+        if (existing && existing.markdown) {
+          set({ currentTaskId: item.task_id })
+          return
+        }
+
+        let data: any = null
+        try {
+          data = await get_task_status(item.task_id)
+        } catch (e) {
+          console.error('加载服务端任务失败', item.task_id, e)
+        }
+        const result = data?.result || {}
+        const audio = result.audio_meta || {}
+
+        const task: Task = {
+          id: item.task_id,
+          status: (data?.status as TaskStatus) || (item.status as TaskStatus) || 'SUCCESS',
+          markdown: result.markdown || '',
+          transcript: result.transcript || {
+            full_text: '',
+            language: '',
+            raw: null,
+            segments: [],
+          },
+          audioMeta: {
+            cover_url: audio.cover_url || item.cover_url || '',
+            duration: audio.duration ?? item.duration ?? 0,
+            file_path: audio.file_path || '',
+            platform: audio.platform || item.platform,
+            raw_info: audio.raw_info ?? null,
+            title: audio.title || item.title || '',
+            video_id: audio.video_id || item.video_id,
+          },
+          createdAt: item.created_at || new Date().toISOString(),
+          statusMessage: data?.message || item.message || '',
+          errorMessage: '',
+          failedAtStatus: undefined,
+          cache: data?.cache,
+          formData: {
+            video_url: '',
+            link: false,
+            screenshot: true,
+            platform: item.platform,
+            quality: 'fast',
+            model_name: '',
+            provider_id: '',
+          },
+        }
+
+        // 头部插入（等价于 addPendingTask 的语义），保证列表顺序与「最新的在最上」一致
+        set(state => ({
+          tasks: [task, ...state.tasks.filter(t => t.id !== task.id)],
+          currentTaskId: task.id,
+        }))
+      },
     }),
     {
       name: 'task-storage',
