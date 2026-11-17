@@ -2,6 +2,7 @@ from typing import List
 from app.gpt.base import GPT
 from app.utils.openai_client import build_openai_client
 from app.gpt.prompt import BASE_PROMPT, AI_SUM, SCREENSHOT
+from app.gpt.response_text import message_text
 from app.gpt.utils import fix_markdown
 from app.models.gpt_model import GPTSource
 from app.models.transcriber_model import TranscriptSegment
@@ -54,6 +55,6 @@ class DeepSeekGPT(GPT):
             messages=messages,
             temperature=0.7
         )
-        return response.choices[0].message.content.strip()
+        return message_text(response.choices[0].message, context="deepseek_gpt")
 
 

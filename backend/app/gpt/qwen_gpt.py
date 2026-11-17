@@ -3,6 +3,7 @@ from app.gpt.base import GPT
 from openai import OpenAI
 from app.gpt.prompt import BASE_PROMPT, AI_SUM, SCREENSHOT
 from app.gpt.provider.OpenAI_compatible_provider import OpenAICompatibleProvider
+from app.gpt.response_text import message_text
 from app.gpt.utils import fix_markdown
 from app.models.gpt_model import GPTSource
 from app.models.transcriber_model import TranscriptSegment
@@ -56,7 +57,7 @@ class QwenGPT(GPT):
             messages=messages,
             temperature=0.7
         )
-        return response.choices[0].message.content.strip()
+        return message_text(response.choices[0].message, context="qwen_gpt")
 
 if __name__ == '__main__':
     gpt = QwenGPT()

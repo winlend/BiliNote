@@ -327,3 +327,12 @@ cython_debug/
 # FFmpeg 构建文件（不应该提交到仓库）
 ffmpeg*/
 ffmpg*/
+# ---- 本地开发/构建产物（BiliNote） ----
+# 离线 wheel 安装目录（tools/offline_deps.py 生成，数百 MB）
+/backend/.deps/
+/.wheels/
+/.tmp/
+# 运行期配置（path/transcriber/downloader 等本地设置）
+/config/
+# 桌面端打包产物（main.yml 在 CI 里生成，本地不入库）
+/release-artifacts/

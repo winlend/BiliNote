@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from app.gpt.prompt import BASE_PROMPT, AI_SUM, SCREENSHOT, LINK, MERGE_PROMPT
+from app.gpt.response_text import message_text
 from app.gpt.utils import fix_markdown
 from app.gpt.request_chunker import RequestChunker
 from app.models.transcriber_model import TranscriptSegment
@@ -264,7 +265,7 @@ class UniversalGPT(GPT):
                         self._save_checkpoint(checkpoint_key, source_signature, current_partials, "merge")
                     raise
 
-                new_partials.append(response.choices[0].message.content.strip())
+                new_partials.append(message_text(response.choices[0].message, context="universal_gpt/merge"))
 
                 if checkpoint_key and source_signature:
                     remaining_partials = []
@@ -359,7 +360,7 @@ class UniversalGPT(GPT):
                     self._save_checkpoint(checkpoint_key, source_signature, partials, "summarize")
                 raise
 
-            partials.append(response.choices[0].message.content.strip())
+            partials.append(message_text(response.choices[0].message, context="universal_gpt/summarize"))
             if checkpoint_key and source_signature:
                 self._save_checkpoint(checkpoint_key, source_signature, partials, "summarize")
 
