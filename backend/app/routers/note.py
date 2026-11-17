@@ -361,12 +361,16 @@ def export_markdown(data: ExportMarkdownRequest):
 
 
 @router.get("/task_history")
-def get_task_history(limit: int = 50, offset: int = 0, platform: Optional[str] = None):
+def get_task_history(limit: int = 50, offset: int = 0, platform: Optional[str] = None,
+                     dedupe: bool = True):
     """任务历史列表（服务端持久化）。
 
     前端原先只把任务存在浏览器 IndexedDB，换设备/换浏览器就看不到历史，由脚本或
     API 发起的任务更不会出现在界面上。这里以 video_tasks 表为骨架、note_results
     里的 status/result 文件补元数据，返回一个可直接渲染的列表（按 created_at 倒序）。
+
+    dedupe=True（默认）时同一个视频只返回最新一次生成：换模型/改风格重跑会产生多个
+    task_id，列表里不该出现两条同标题的记录；传 dedupe=false 可看完整流水。
 
     正文（markdown/transcript）不在列表里返回，前端点开时再调 /task_status/{id}，
     避免一次拉几十篇正文。
@@ -374,7 +378,7 @@ def get_task_history(limit: int = 50, offset: int = 0, platform: Optional[str] =
     from app.db.video_task_dao import list_video_tasks
 
     out = _note_output_dir()
-    total, rows = list_video_tasks(limit=limit, offset=offset, platform=platform)
+    total, rows = list_video_tasks(limit=limit, offset=offset, platform=platform, dedupe=dedupe)
 
     items = []
     for row in rows:
